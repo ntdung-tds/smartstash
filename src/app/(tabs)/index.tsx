@@ -8,6 +8,7 @@ import { styles, Colors, ItemCard, SectionTitle, AddTermModal, AppButton, TAB_BA
 import {
   categoryColor, categoryIcon, categoryLabel, statusColorFor, statusIcon, statusLabel, tint,
   ALERT_TIER_COLORS, alertTierColor, alertTierIcon,
+  STATUS_GROUPS,
   type IconName,
 } from '@/theme';
 import { useT } from '@/i18n';
@@ -15,7 +16,7 @@ import type { AlertTier, Item, ItemCategory, ItemStatus } from '@/types';
 import { CATEGORY_LABELS, STATUS_LABELS } from '@/types';
 import {
   searchItems, listItems, getBreadcrumb, breadcrumbText, listMediaForOwner,
-  listActiveLoans, countActiveItems, countLocations,
+  listActiveLoans, listActiveConsignments, outstandingOf, countActiveItems, countLocations,
   findItemByBarcode, findLocationByQrCode,
 } from '@/db/queries';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
@@ -223,6 +224,10 @@ export default function HomeScreen() {
   const [showWatch, setShowWatch] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [lentCount, setLentCount] = useState(0);
+  // Cơ cấu đang ở ngoài theo món (cho ItemCard hiện "Tổng · Đang mượn · Ở nhà"
+  // + phân số trên huy hiệu) — dựng từ chính listActiveLoans đã tải trong
+  // load(), không thêm truy vấn nào.
+  const [outMap, setOutMap] = useState<Record<string, { lentOut: number; consignedOut: number }>>({});
   const [totalActive, setTotalActive] = useState(0);
   const [locationCount, setLocationCount] = useState(0);
   const [catCounts, setCatCounts] = useState<Record<string, number>>({});
@@ -254,19 +259,29 @@ export default function HomeScreen() {
     const alertCfg = await getAlertSettings();
     setAlertCfgState(alertCfg);
     let result: Item[];
+    // Đang lọc theo MỘT trạng thái kết thúc đơn lẻ (SOLD/GIFTED/DISPOSED/LOST/USED_UP)?
+    const isEndStatus = (STATUS_GROUPS['grp:end'].members as string[]).includes(statusFilter);
     if (debounced.trim()) {
       result = await searchItems(debounced);
+    } else if (isEndStatus) {
+      // listItems() mặc định loại các trạng thái kết thúc nên hỏi DB tường
+      // minh theo đúng trạng thái đó — đường truy vấn từng viết cho nhóm
+      // 'grp:end', nay với mảng 1 phần tử — giữ thứ tự mặc định (mới sửa trước)
+      const parts = await Promise.all(
+        [statusFilter].map((m) => listItems({ statusFilter: m })),
+      );
+      result = parts.flat().sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     } else if (
-      statusFilter !== 'ALL' && statusFilter !== 'LENT_ALL' && statusFilter !== 'EXPIRING'
+      statusFilter !== 'ALL' && statusFilter !== 'grp:lent' && statusFilter !== 'LENT_ALL' && statusFilter !== 'EXPIRING'
     ) {
-      // Trạng thái cụ thể (kể cả SOLD/DISPOSED/LOST và trạng thái tự tạo): hỏi thẳng DB
+      // Trạng thái cụ thể còn lại (kể cả trạng thái tự tạo): hỏi thẳng DB
       result = await listItems({ statusFilter });
     } else {
       result = await listItems();
     }
     // Hai nhóm lọc kết hợp (AND), lọc phía client
-    if (statusFilter === 'LENT_ALL') {
-      result = result.filter((i) => i.status === 'LENT' || i.status === 'PARTIALLY_LENT');
+    if (statusFilter === 'grp:lent' || statusFilter === 'LENT_ALL') {
+      result = result.filter((i) => STATUS_GROUPS['grp:lent'].members.includes(i.status as ItemStatus));
     } else if (statusFilter === 'EXPIRING') {
       // Chip "Sắp hết hạn": giữ hành vi cũ nhưng theo mức — chỉ 3 mức khẩn của hạn dùng
       result = result.filter((i) => {
@@ -300,8 +315,22 @@ export default function HomeScreen() {
     for (const i of allItems) counts[i.category] = (counts[i.category] ?? 0) + 1;
     setCatCounts(counts);
 
+    // listActiveLoans chỉ gồm kind LOAN (đếm "đang cho mượn" + dòng cảnh báo
+    // hạn trả); cơ cấu ở ngoài của thẻ món cộng thêm record GỬI BÁN, mọi
+    // phần đều theo outstandingOf chuẩn (lent − returned − closed)
     const loans = await listActiveLoans();
+    const consignments = await listActiveConsignments();
     setLentCount(loans.length);
+    const om: Record<string, { lentOut: number; consignedOut: number }> = {};
+    for (const l of loans) {
+      const entry = (om[l.item_id] ??= { lentOut: 0, consignedOut: 0 });
+      entry.lentOut += outstandingOf(l);
+    }
+    for (const c of consignments) {
+      const entry = (om[c.item_id] ??= { lentOut: 0, consignedOut: 0 });
+      entry.consignedOut += outstandingOf(c);
+    }
+    setOutMap(om);
     setTotalActive(await countActiveItems());
     setLocationCount(await countLocations());
 
@@ -370,6 +399,45 @@ export default function HomeScreen() {
       ];
       // Nhóm WATCH cũng giới hạn 3 dòng như các nhóm mức khác khi chưa mở rộng
       const watchVisibleRows = expandedGroups.WATCH ? watchRows : watchRows.slice(0, 3);
+
+      // Chip lọc trạng thái theo thứ tự STATUS_LABELS: chỉ còn nhóm 'grp:lent'
+      // gộp hiển thị — 1 chip nhóm tại vị trí LENT, PARTIALLY_LENT không có
+      // chip riêng. Các trạng thái kết thúc (SOLD, GIFTED, DONATED, DISPOSED,
+      // LOST, USED_UP) có chip RIÊNG từng trạng thái (ghim/bỏ ghim theo khoá
+      // của chính nó; lọc qua đường listItems tường minh nhờ grp:end), còn
+      // CONSIGNED đứng chip đơn như các trạng thái đang quản lý khác;
+      // trạng thái tự tạo nằm ở dãy riêng phía dưới.
+      const statusChips: {
+        key: string; label: string; icon: IconName; color: string;
+        active: boolean; pinned: boolean; visible: boolean; onPress: () => void;
+      }[] = [];
+      for (const s of BUILTIN_STATUSES) {
+        if (s === 'PARTIALLY_LENT') continue;
+        if (s === 'LENT') {
+          const g = STATUS_GROUPS['grp:lent'];
+          statusChips.push({
+            key: 'grp:lent',
+            label: statusLabel('LENT'),
+            icon: g.icon,
+            color: g.color,
+            active: statusFilter === 'grp:lent' || statusFilter === 'LENT_ALL',
+            pinned: pinnedStatuses.includes('grp:lent'),
+            visible: !pinnedOnly || pinnedStatuses.includes('grp:lent'),
+            onPress: () => setStatusFilter('grp:lent'),
+          });
+          continue;
+        }
+        statusChips.push({
+          key: s,
+          label: statusLabel(s),
+          icon: statusIcon(s),
+          color: statusColorFor(s),
+          active: statusFilter === s,
+          pinned: pinnedStatuses.includes(s),
+          visible: !pinnedOnly || pinnedStatuses.includes(s),
+          onPress: () => setStatusFilter(s),
+        });
+      }
       return (
       <View style={{ gap: 14, marginBottom: 14 }}>
         <View>
@@ -469,7 +537,7 @@ export default function HomeScreen() {
                 <View key={tier} style={{ gap: 5 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
-                    <Text style={{ fontSize: 12.5, fontWeight: '800', color, letterSpacing: 0.4 }}>{t(`alerts.tier${tier}`)}</Text>
+                    <Text style={{ fontSize: 12.5, fontWeight: '800', color, letterSpacing: 0.4, textDecorationLine: 'underline' }}>{t(`alerts.tier${tier}`)}</Text>
                     <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.faint }}>{rows.length}</Text>
                   </View>
                   {visibleRows.map((row, idx) => (
@@ -495,7 +563,7 @@ export default function HomeScreen() {
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
                 >
                   <Ionicons name="eye-outline" size={15} color={ALERT_TIER_COLORS.WATCH} />
-                  <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '800', color: ALERT_TIER_COLORS.WATCH, letterSpacing: 0.4 }}>
+                  <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '800', color: ALERT_TIER_COLORS.WATCH, letterSpacing: 0.4, textDecorationLine: 'underline' }}>
                     {t('alerts.watchTitle', { d: alertCfgState.watchDays })}
                   </Text>
                   <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.faint }}>{watchRows.length}</Text>
@@ -595,19 +663,19 @@ export default function HomeScreen() {
                 active={statusFilter === 'ALL'}
                 onPress={() => setStatusFilter('ALL')}
               />
-              {BUILTIN_STATUSES
-                .filter((s) => !pinnedOnly || pinnedStatuses.includes(s))
-                .map((s) => (
+              {statusChips
+                .filter((c) => c.visible)
+                .map((c) => (
                   <FilterChip
-                    key={s}
-                    label={statusLabel(s)}
-                    icon={statusIcon(s)}
-                    dot={statusColorFor(s)}
-                    color={statusColorFor(s)}
-                    active={statusFilter === s}
-                    pinned={pinnedStatuses.includes(s)}
-                    onPress={() => setStatusFilter(s)}
-                    onLongPress={() => togglePin('STATUS', s)}
+                    key={c.key}
+                    label={c.label}
+                    icon={c.icon}
+                    dot={c.color}
+                    color={c.color}
+                    active={c.active}
+                    pinned={c.pinned}
+                    onPress={c.onPress}
+                    onLongPress={() => togglePin('STATUS', c.key)}
                   />
                 ))}
               {customStatuses
@@ -625,18 +693,6 @@ export default function HomeScreen() {
                     onLongPress={() => togglePin('STATUS', t.id)}
                   />
                 ))}
-              {(!pinnedOnly || pinnedStatuses.includes('LENT_ALL')) && (
-                <FilterChip
-                  label={t('home.statLent')}
-                  icon="swap-horizontal"
-                  dot={Colors.orange}
-                  color={Colors.orange}
-                  active={statusFilter === 'LENT_ALL'}
-                  pinned={pinnedStatuses.includes('LENT_ALL')}
-                  onPress={() => setStatusFilter('LENT_ALL')}
-                  onLongPress={() => togglePin('STATUS', 'LENT_ALL')}
-                />
-              )}
               {(!pinnedOnly || pinnedStatuses.includes('EXPIRING')) && (
                 <FilterChip
                   label={t('filter.expiring')}
@@ -650,6 +706,11 @@ export default function HomeScreen() {
                 />
               )}
             </ScrollView>
+          )}
+          {/* Chú thích cho bộ lọc nhóm đang chọn — dòng phụ của nhóm gộp
+              Cho mượn ('grp:lent') trong prototype */}
+          {(statusFilter === 'grp:lent' || statusFilter === 'LENT_ALL') && (
+            <Text style={{ fontSize: 12, color: Colors.subtext }}>{t('home.lentGroupNote')}</Text>
           )}
         </View>
 
@@ -766,6 +827,7 @@ export default function HomeScreen() {
             item={item}
             breadcrumb={crumbs[item.id] ?? ''}
             thumbUri={thumbs[item.id]}
+            outInfo={outMap[item.id]}
             onPress={() => router.push(`/item/${item.id}`)}
           />
         )}

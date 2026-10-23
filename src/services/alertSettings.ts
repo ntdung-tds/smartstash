@@ -15,6 +15,8 @@ export interface AlertSettings {
   notifyWarranty: boolean;
   /** Nhắc lại mỗi ngày khi khoản vay quá hạn (tối đa +3 ngày) */
   loanRepeat: boolean;
+  /** Nhắc kiểm tra đồ gửi bán mỗi 30 ngày (mốc +30/+60/+90 từ ngày gửi) */
+  consignRemind: boolean;
 }
 
 export const ALERT_SETTINGS_DEFAULTS: AlertSettings = {
@@ -24,6 +26,7 @@ export const ALERT_SETTINGS_DEFAULTS: AlertSettings = {
   notifyLoan: true,
   notifyWarranty: true,
   loanRepeat: true,
+  consignRemind: true,
 };
 
 const KEY = 'alert_cfg';
@@ -47,6 +50,7 @@ function sanitize(raw: Partial<AlertSettings> | null | undefined): AlertSettings
     notifyLoan: typeof raw?.notifyLoan === 'boolean' ? raw.notifyLoan : d.notifyLoan,
     notifyWarranty: typeof raw?.notifyWarranty === 'boolean' ? raw.notifyWarranty : d.notifyWarranty,
     loanRepeat: typeof raw?.loanRepeat === 'boolean' ? raw.loanRepeat : d.loanRepeat,
+    consignRemind: typeof raw?.consignRemind === 'boolean' ? raw.consignRemind : d.consignRemind,
   };
 }
 

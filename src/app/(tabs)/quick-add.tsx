@@ -1,22 +1,22 @@
 import React, { useCallback, useState } from 'react';
 import {
-  View, Text, TextInput, ScrollView, TouchableOpacity, Image, Alert,
+  View, Text, TextInput, ScrollView, TouchableOpacity,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { styles, Colors, LocationPickerModal, SceneImage, AddTermModal, AppButton, Field, TAB_BAR_CLEARANCE } from '@/components/ui';
+import { styles, Colors, LocationPickerModal, AddTermModal, AppButton, Field, QtyInput, DateField, AppPopup, PhotoGallery, TAB_BAR_CLEARANCE, type AppPopupOption } from '@/components/ui';
 import { categoryColor, categoryIcon, categoryLabel, conditionColor, conditionHint, conditionIcon, conditionLabel, tint, cardShadow, type IconName } from '@/theme';
 import type { ItemCategory, ItemCondition, Location } from '@/types';
 import { CATEGORY_LABELS } from '@/types';
-import { listLocations, createItem, updateItem, countActiveItems, findItemByBarcode, findLocationByQrCode } from '@/db/queries';
+import { listLocations, createItem, updateItem, updateMediaPin, countActiveItems, findItemByBarcode, findLocationByQrCode } from '@/db/queries';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { kvGet, kvSet } from '@/db/client';
-import { takePhoto, pickPhoto, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
+import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
 import { scheduleExpiryReminders, rescheduleAllReminders } from '@/services/notificationService';
 import { useT } from '@/i18n';
 import { useAppStore } from '@/store/useAppStore';
-import { CURRENT_LIMITS } from '@/config';
-import { maskDateInput, parseDisplayDate } from '@/utils';
+import { getCurrentLimits } from '@/services/planService';
+import { parseDisplayDate, uuid } from '@/utils';
 
 const CATEGORIES = Object.keys(CATEGORY_LABELS) as ItemCategory[];
 const CONDITIONS: ItemCondition[] = ['NEW', 'GOOD', 'WORN', 'NEED_REPAIR', 'BROKEN'];
@@ -43,17 +43,19 @@ function StepCard({
   );
 }
 
-/** Vùng chọn ảnh khi chưa có ảnh: viền đứt nét tím trên nền tint nhạt */
-const dashedPhotoBox = {
-  borderWidth: 1.5, borderStyle: 'dashed' as const, borderColor: Colors.primary,
-  backgroundColor: tint(Colors.primary, '14'), borderRadius: 20, padding: 12,
-};
+/** Ảnh đang chờ lưu trong form: key ổn định để gallery xoá đúng tấm.
+ *  Ảnh hiện trường mang theo ghim RIÊNG của chính nó (pin, tỉ lệ 0–1) —
+ *  khi lưu sẽ ghi vào cột pin của hàng media tương ứng. */
+interface PendingPhoto {
+  key: string;
+  picked: PickedPhoto;
+  pin?: { x: number; y: number } | null;
+}
 
 export default function QuickAddScreen() {
   const { t, lang } = useT();
-  const [photo, setPhoto] = useState<PickedPhoto | null>(null);
-  const [scenePhoto, setScenePhoto] = useState<PickedPhoto | null>(null);
-  const [pin, setPin] = useState<{ x: number; y: number } | null>(null);
+  const [photos, setPhotos] = useState<PendingPhoto[]>([]);
+  const [scenePhotos, setScenePhotos] = useState<PendingPhoto[]>([]);
   const [name, setName] = useState('');
   const [location, setLocation] = useState<Location | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -66,7 +68,9 @@ export default function QuickAddScreen() {
   const [category, setCategory] = useState<string>('OTHER');
   const [condition, setCondition] = useState<string>('GOOD');
   const [conditionNote, setConditionNote] = useState('');
-  const [quantity, setQuantity] = useState('1');
+  // Số lượng BẮT BUỘC: khởi tạo TRỐNG, người dùng phải tự nhập/chọn
+  const [quantity, setQuantity] = useState('');
+  const [qtyError, setQtyError] = useState(false);
   const [unit, setUnit] = useState(() => t('qa.unitDefault'));
   const [positionNote, setPositionNote] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
@@ -76,6 +80,10 @@ export default function QuickAddScreen() {
   const [tagsText, setTagsText] = useState('');
   const [price, setPrice] = useState('');
   const [saving, setSaving] = useState(false);
+  // Popup dùng chung thay hộp thoại hệ thống: không có options = thông
+  // báo/lỗi 1 nút "Đã hiểu"; có options = danh sách lựa chọn AppPopup
+  const [popup, setPopup] = useState<{ title: string; message?: string; options?: AppPopupOption[] } | null>(null);
+  const showInfo = (title: string, message?: string) => setPopup({ title, message });
   const bump = useAppStore((s) => s.bump);
   const customCategories = useAppStore((s) => s.customCategories);
   const customConditions = useAppStore((s) => s.customConditions);
@@ -102,20 +110,75 @@ export default function QuickAddScreen() {
     .filter((l): l is Location => !!l)
     .slice(0, 5);
 
+  // ---------- Ảnh (gallery dùng chung): 2 bucket riêng — ảnh đồ vật và
+  // ảnh hiện trường — mỗi bucket có trần RIÊNG theo gói (maxItemPhotos /
+  // maxScenePhotos trong PLAN_LIMITS) ----------
+
+  const itemPhotoLimit = getCurrentLimits().maxItemPhotos;
+  const scenePhotoLimit = getCurrentLimits().maxScenePhotos;
+  const photoLimitFor = (kind: 'item' | 'scene') => (kind === 'item' ? itemPhotoLimit : scenePhotoLimit);
+
+  async function addPhotosFromCamera(kind: 'item' | 'scene') {
+    const current = kind === 'item' ? photos : scenePhotos;
+    const photoLimit = photoLimitFor(kind);
+    if (current.length >= photoLimit) {
+      showInfo(t('loc.limitTitle'), t(kind === 'item' ? 'photos.limitMsg' : 'photos.sceneLimitMsg', { n: photoLimit }));
+      return;
+    }
+    const picked = await takePhoto();
+    if (!picked) return;
+    const entry: PendingPhoto = { key: uuid(), picked, pin: null };
+    if (kind === 'item') setPhotos((prev) => [...prev, entry]);
+    else setScenePhotos((prev) => [...prev, entry]);
+  }
+
+  async function addPhotosFromLibrary(kind: 'item' | 'scene') {
+    const current = kind === 'item' ? photos : scenePhotos;
+    const photoLimit = photoLimitFor(kind);
+    const remaining = photoLimit - current.length;
+    if (remaining <= 0) {
+      showInfo(t('loc.limitTitle'), t(kind === 'item' ? 'photos.limitMsg' : 'photos.sceneLimitMsg', { n: photoLimit }));
+      return;
+    }
+    const picked = await pickPhotos(remaining);
+    if (picked.length === 0) return;
+    // Một số máy bỏ qua selectionLimit: chỉ lấy đến trần và báo giới hạn
+    const accepted = picked.slice(0, remaining).map((p) => ({ key: uuid(), picked: p, pin: null }));
+    if (picked.length > remaining) {
+      showInfo(t('loc.limitTitle'), t(kind === 'item' ? 'photos.limitMsg' : 'photos.sceneLimitMsg', { n: photoLimit }));
+    }
+    if (kind === 'item') setPhotos((prev) => [...prev, ...accepted]);
+    else setScenePhotos((prev) => [...prev, ...accepted]);
+  }
+
+  function removePendingPhoto(kind: 'item' | 'scene', key: string) {
+    // Mỗi ảnh hiện trường mang ghim riêng — xoá tấm nào chỉ mất ghim của
+    // chính tấm đó, các tấm còn lại giữ nguyên
+    if (kind === 'item') {
+      setPhotos((prev) => prev.filter((p) => p.key !== key));
+    } else {
+      setScenePhotos((prev) => prev.filter((p) => p.key !== key));
+    }
+  }
+
   /** Xử lý mã vừa quét: trùng món -> cảnh báo; mã vị trí -> chọn vị trí; còn lại gắn cho món mới */
   async function handleScannedCode(data: string) {
     const dup = await findItemByBarcode(data);
     if (dup) {
-      Alert.alert(t('scan.dupTitle'), t('scan.dupBody', { name: dup.name }), [
-        { text: t('scan.viewItem'), onPress: () => router.push(`/item/${dup.id}`) },
-        { text: t('scan.later'), style: 'cancel' },
-      ]);
+      setPopup({
+        title: t('scan.dupTitle'),
+        message: t('scan.dupBody', { name: dup.name }),
+        options: [
+          { label: t('scan.viewItem'), icon: 'eye-outline', color: Colors.primary, onPress: () => router.push(`/item/${dup.id}`) },
+          { label: t('scan.later'), icon: 'time-outline', color: Colors.subtext, onPress: () => {} },
+        ],
+      });
       return;
     }
     const loc = await findLocationByQrCode(data);
     if (loc) {
       setLocation(loc);
-      Alert.alert(t('scan.locSet', { name: loc.name }));
+      showInfo(t('scan.locSet', { name: loc.name }));
       return;
     }
     setBarcode(data);
@@ -123,18 +186,26 @@ export default function QuickAddScreen() {
 
   async function handleSave(stayHere: boolean) {
     if (!name.trim()) {
-      Alert.alert(t('qa.noNameTitle'), t('qa.noNameMsg'));
+      showInfo(t('qa.noNameTitle'), t('qa.noNameMsg'));
       return;
     }
     if (!location) {
-      Alert.alert(t('qa.noLocTitle'), t('qa.noLocMsg'));
+      showInfo(t('qa.noLocTitle'), t('qa.noLocMsg'));
+      return;
+    }
+    // Số lượng BẮT BUỘC ngang hàng tên đồ: trống / 0 / không phải số
+    // nguyên ≥ 1 thì chặn lưu, báo lỗi ngay tại trường (không còn mặc
+    // định im lặng về 1 như trước)
+    const qtyNum = /^\d+$/.test(quantity.trim()) ? parseInt(quantity, 10) : NaN;
+    if (isNaN(qtyNum) || qtyNum < 1) {
+      setQtyError(true);
       return;
     }
     const activeCount = await countActiveItems();
-    if (activeCount >= CURRENT_LIMITS.maxActiveItems) {
-      Alert.alert(
+    if (activeCount >= getCurrentLimits().maxActiveItems) {
+      showInfo(
         t('loc.limitTitle'),
-        t('qa.limitItemMsg', { n: CURRENT_LIMITS.maxActiveItems }),
+        t('qa.limitItemMsg', { n: getCurrentLimits().maxActiveItems }),
       );
       return;
     }
@@ -143,13 +214,12 @@ export default function QuickAddScreen() {
     const warrantyISO = warrantyDate.trim() ? parseDisplayDate(warrantyDate) : null;
     const purchaseISO = purchaseDate.trim() ? parseDisplayDate(purchaseDate) : null;
     if ((expiryDate.trim() && !expiryISO) || (warrantyDate.trim() && !warrantyISO) || (purchaseDate.trim() && !purchaseISO)) {
-      Alert.alert(t('qa.badDateTitle'), t('qa.badDateMsg'));
+      showInfo(t('qa.badDateTitle'), t('qa.badDateMsg'));
       return;
     }
     const tagList = tagsText.split(',').map((s) => s.trim()).filter(Boolean);
     setSaving(true);
     try {
-      const qty = Math.max(1, parseInt(quantity, 10) || 1);
       const item = await createItem({
         name: name.trim(),
         category,
@@ -157,7 +227,7 @@ export default function QuickAddScreen() {
         condition_note: conditionNote.trim() || null,
         location_id: location.id,
         position_note: positionNote.trim() || null,
-        quantity: qty,
+        quantity: qtyNum,
         unit: unit.trim() || t('qa.unitDefault'),
         expiry_date: expiryISO,
         warranty_expiry_date: warrantyISO,
@@ -166,16 +236,23 @@ export default function QuickAddScreen() {
         tags: tagList.length > 0 ? JSON.stringify(tagList) : null,
         barcode: barcode || null,
         purchase_price: price ? parseInt(price.replace(/[^\d]/g, ''), 10) || null : null,
-        pin_x: scenePhoto && pin ? pin.x : null,
-        pin_y: scenePhoto && pin ? pin.y : null,
       });
 
-      if (photo) {
-        await processAndRegisterPhoto(photo, 'ITEM', item.id, 'ITEM_CLOSEUP', true);
+      // Ảnh đồ vật: đăng ký lần lượt, tấm đầu tiên là ảnh chính
+      for (let i = 0; i < photos.length; i++) {
+        await processAndRegisterPhoto(photos[i].picked, 'ITEM', item.id, 'ITEM_CLOSEUP', i === 0);
       }
-      if (scenePhoto) {
-        const media = await processAndRegisterPhoto(scenePhoto, 'ITEM', item.id, 'ITEM_SCENE', false);
-        await updateItem(item.id, { scene_media_id: media.id, pin_x: pin?.x ?? null, pin_y: pin?.y ?? null });
+      // Ảnh hiện trường: nhiều tấm cùng kind ITEM_SCENE; scene_media_id vẫn
+      // trỏ tấm đầu tiên (ảnh hiện trường chính). Ghim KHÔNG còn nằm ở item:
+      // mỗi tấm ghi ghim riêng của nó vào chính hàng media vừa đăng ký.
+      if (scenePhotos.length > 0) {
+        let firstSceneId: string | null = null;
+        for (const sp of scenePhotos) {
+          const media = await processAndRegisterPhoto(sp.picked, 'ITEM', item.id, 'ITEM_SCENE', false);
+          if (!firstSceneId) firstSceneId = media.id;
+          if (sp.pin) await updateMediaPin(media.id, sp.pin.x, sp.pin.y);
+        }
+        await updateItem(item.id, { scene_media_id: firstSceneId });
       }
       if (expiryISO) {
         scheduleExpiryReminders(item.name, expiryISO).catch(() => {});
@@ -189,29 +266,31 @@ export default function QuickAddScreen() {
       rescheduleAllReminders().catch(() => {});
 
       if (stayHere) {
-        setPhoto(null);
-        setScenePhoto(null);
-        setPin(null);
+        setPhotos([]);
+        setScenePhotos([]);
         setName('');
         setPositionNote('');
         setConditionNote('');
         setBarcode(null);
-        Alert.alert(t('qa.savedStayTitle'), t('qa.savedStayMsg'));
+        showInfo(t('qa.savedStayTitle'), t('qa.savedStayMsg'));
       } else {
-        Alert.alert(t('qa.savedTitle'), t('qa.savedMsg', { name: item.name }), [
-          { text: t('qa.viewItem'), onPress: () => router.push(`/item/${item.id}`) },
-          { text: t('qa.goHome'), onPress: () => router.push('/(tabs)') },
-        ]);
-        setPhoto(null);
-        setScenePhoto(null);
-        setPin(null);
+        setPopup({
+          title: t('qa.savedTitle'),
+          message: t('qa.savedMsg', { name: item.name }),
+          options: [
+            { label: t('qa.viewItem'), icon: 'eye-outline', color: Colors.primary, onPress: () => router.push(`/item/${item.id}`) },
+            { label: t('qa.goHome'), icon: 'home-outline', color: Colors.teal, onPress: () => router.push('/(tabs)') },
+          ],
+        });
+        setPhotos([]);
+        setScenePhotos([]);
         setName('');
         setPositionNote('');
         setConditionNote('');
         setBarcode(null);
       }
     } catch (e) {
-      Alert.alert(t('qa.saveErrorTitle'), e instanceof Error ? e.message : String(e));
+      showInfo(t('qa.saveErrorTitle'), e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
@@ -252,23 +331,18 @@ export default function QuickAddScreen() {
 
       {/* BƯỚC 1: Ảnh & tên đồ */}
       <StepCard step={1} color={Colors.coral} title={t('qa.step1')}>
-        <Field label={t('qa.photoLabel')}>
-          {photo ? (
-            <View>
-              <Image source={{ uri: photo.uri }} style={{ width: '100%', height: 200, borderRadius: 20 }} />
-              <TouchableOpacity style={{ position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 999, padding: 6, alignItems: 'center', justifyContent: 'center' }} onPress={() => setPhoto(null)}>
-                <Ionicons name="close" size={18} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <View style={dashedPhotoBox}>
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <AppButton title={t('qa.takePhoto')} variant="secondary" icon="camera" onPress={async () => setPhoto(await takePhoto())} style={{ flex: 1 }} />
-                <AppButton title={t('qa.pickPhoto')} variant="secondary" icon="images" onPress={async () => setPhoto(await pickPhoto())} style={{ flex: 1 }} />
-              </View>
-            </View>
-          )}
-        </Field>
+        <PhotoGallery
+          title={t('qa.photoLabel')}
+          titleColor={Colors.coral}
+          photos={photos.map((p, i) => ({ key: p.key, uri: p.picked.uri, isPrimary: i === 0 }))}
+          takeLabel={t('qa.takePhoto')}
+          pickLabel={t('qa.pickPhoto')}
+          onTake={() => { addPhotosFromCamera('item').catch(() => {}); }}
+          onPick={() => { addPhotosFromLibrary('item').catch(() => {}); }}
+          onRemove={(e) => removePendingPhoto('item', e.key)}
+          maxReached={photos.length >= itemPhotoLimit}
+          limitText={t('photos.limitMsg', { n: itemPhotoLimit })}
+        />
 
         <Field label={t('qa.nameLabel')}>
           <TextInput style={styles.input} placeholder={t('qa.namePlaceholder')} placeholderTextColor={Colors.faint} value={name} onChangeText={setName} />
@@ -313,21 +387,23 @@ export default function QuickAddScreen() {
           </TouchableOpacity>
         </Field>
 
-        <Field label={t('qa.sceneLabel')}>
-          {scenePhoto ? (
-            <View style={{ gap: 8 }}>
-              <SceneImage uri={scenePhoto.uri} pin={pin} editable onPinChange={setPin} height={240} />
-              <AppButton title={t('qa.removeScene')} variant="secondary" icon="trash-outline" onPress={() => { setScenePhoto(null); setPin(null); }} />
-            </View>
-          ) : (
-            <View style={dashedPhotoBox}>
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <AppButton title={t('qa.takeScene')} variant="secondary" icon="pin" onPress={async () => setScenePhoto(await takePhoto())} style={{ flex: 1 }} />
-                <AppButton title={t('qa.pickScene')} variant="secondary" icon="images" onPress={async () => setScenePhoto(await pickPhoto())} style={{ flex: 1 }} />
-              </View>
-            </View>
-          )}
-        </Field>
+        <PhotoGallery
+          title={t('qa.sceneLabel')}
+          titleColor={Colors.primary}
+          photos={scenePhotos.map((p) => ({ key: p.key, uri: p.picked.uri, pin: p.pin ?? null }))}
+          takeLabel={t('qa.takeScene')}
+          pickLabel={t('photos.addScene')}
+          onTake={() => { addPhotosFromCamera('scene').catch(() => {}); }}
+          onPick={() => { addPhotosFromLibrary('scene').catch(() => {}); }}
+          onRemove={(e) => removePendingPhoto('scene', e.key)}
+          maxReached={scenePhotos.length >= scenePhotoLimit}
+          limitText={t('photos.sceneLimitMsg', { n: scenePhotoLimit })}
+          onPinChange={(e, newPin) => {
+            // Ghim riêng của chính tấm vừa chạm — các tấm khác không đổi
+            setScenePhotos((prev) => prev.map((p) => (p.key === e.key ? { ...p, pin: newPin } : p)));
+          }}
+          captionSuffix={t('photos.draftNote')}
+        />
 
         <Field label={t('qa.categoryLabel')}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -423,7 +499,15 @@ export default function QuickAddScreen() {
 
         <View style={{ flexDirection: 'row', gap: 10 }}>
           <Field label={t('qa.qtyLabel')} style={{ flex: 1 }}>
-            <TextInput style={styles.input} keyboardType="number-pad" value={quantity} onChangeText={setQuantity} />
+            <QtyInput
+              value={quantity}
+              onChangeText={(v) => { setQuantity(v); setQtyError(false); }}
+              placeholder={t('qa.qtyPlaceholder')}
+              invalid={qtyError}
+            />
+            {qtyError && (
+              <Text style={{ fontSize: 12.5, color: Colors.danger, lineHeight: 17 }}>{t('qa.qtyRequired')}</Text>
+            )}
           </Field>
           <Field label={t('qa.unitLabel')} style={{ flex: 1 }}>
             <TextInput style={styles.input} value={unit} onChangeText={setUnit} />
@@ -437,40 +521,19 @@ export default function QuickAddScreen() {
           <TextInput style={styles.input} placeholder={t('qa.notePlaceholder')} placeholderTextColor={Colors.faint} value={positionNote} onChangeText={setPositionNote} />
         </Field>
         <Field label={t('qa.expiryLabel')}>
-          <TextInput
-            style={styles.input}
-            keyboardType="number-pad"
-            placeholder={t('date.example')}
-            placeholderTextColor={Colors.faint}
-            value={expiryDate}
-            onChangeText={(v) => setExpiryDate(maskDateInput(v))}
-          />
+          <DateField value={expiryDate} onChangeText={setExpiryDate} placeholder={t('date.example')} title={t('qa.expiryLabel')} />
         </Field>
         <Field label={t('qa.priceLabel')}>
           <TextInput style={styles.input} placeholder="1250000" placeholderTextColor={Colors.faint} keyboardType="number-pad" value={price} onChangeText={setPrice} />
         </Field>
         <Field label={t('qa.purchaseDateLabel')}>
-          <TextInput
-            style={styles.input}
-            keyboardType="number-pad"
-            placeholder={t('date.example')}
-            placeholderTextColor={Colors.faint}
-            value={purchaseDate}
-            onChangeText={(v) => setPurchaseDate(maskDateInput(v))}
-          />
+          <DateField value={purchaseDate} onChangeText={setPurchaseDate} placeholder={t('date.example')} title={t('qa.purchaseDateLabel')} />
         </Field>
         <Field label={t('qa.purchasePlaceLabel')}>
           <TextInput style={styles.input} placeholder={t('qa.purchasePlacePh')} placeholderTextColor={Colors.faint} value={purchasePlace} onChangeText={setPurchasePlace} />
         </Field>
         <Field label={t('qa.warrantyLabel')}>
-          <TextInput
-            style={styles.input}
-            keyboardType="number-pad"
-            placeholder={t('date.example')}
-            placeholderTextColor={Colors.faint}
-            value={warrantyDate}
-            onChangeText={(v) => setWarrantyDate(maskDateInput(v))}
-          />
+          <DateField value={warrantyDate} onChangeText={setWarrantyDate} placeholder={t('date.example')} title={t('qa.warrantyLabel')} />
         </Field>
         <Field label={t('qa.tagsLabel')} hint={t('qa.tagsHint')}>
           <TextInput style={styles.input} placeholder={t('qa.tagsPh')} placeholderTextColor={Colors.faint} value={tagsText} onChangeText={setTagsText} />
@@ -519,6 +582,14 @@ export default function QuickAddScreen() {
         kind="CONDITION"
         onClose={() => setShowAddCond(false)}
         onAdded={(term) => setCondition(term.id)}
+      />
+      <AppPopup
+        visible={!!popup}
+        title={popup?.title ?? ''}
+        message={popup?.message}
+        options={popup?.options}
+        okLabel={t('common.gotIt')}
+        onClose={() => setPopup(null)}
       />
     </ScrollView>
   );

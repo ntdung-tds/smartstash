@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, Modal, TextInput, Alert,
+  View, Text, FlatList, TouchableOpacity, Modal, TextInput, ScrollView,
   Vibration,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { styles, Colors, AppButton, IconTile, IconPickerGrid, TAB_BAR_CLEARANCE, type IconName } from '@/components/ui';
-import { LOCATION_TYPE_COLORS, locationIconName, locationTypeLabel } from '@/theme';
+import { styles, Colors, AppButton, IconTile, IconPickerGrid, AppPopup, PhotoGallery, TAB_BAR_CLEARANCE, type IconName } from '@/components/ui';
+import { LOCATION_TYPE_COLORS, locationIconName, locationTypeLabel, tint } from '@/theme';
 import { useT } from '@/i18n';
 import type { Location, LocationType } from '@/types';
 import { listLocations, createLocation, itemsInLocation, countLocations, reorderLocations } from '@/db/queries';
+import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
+import { uuid } from '@/utils';
 import { useAppStore } from '@/store/useAppStore';
-import { CURRENT_LIMITS } from '@/config';
+import { getCurrentLimits } from '@/services/planService';
 
 const TYPE_BY_DEPTH: LocationType[] = ['PROPERTY', 'ROOM', 'FURNITURE', 'CONTAINER'];
 
@@ -40,6 +42,12 @@ export default function LocationsScreen() {
   const [modalParent, setModalParent] = useState<Location | null | undefined>(undefined); // undefined = đóng
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState<IconName | null>(null);
+  // Ảnh hiện trường ĐANG CHỜ của vị trí sắp tạo (kiến trúc pending của
+  // quick-add): form này là nhập-xong-mới-lưu — vị trí chưa có id khi đang
+  // nhập nên ảnh chỉ giữ ở state; ngay sau khi createLocation thành công
+  // mới đăng ký media (owner 'LOCATION', kind 'LOCATION_SCENE') theo id
+  // vừa tạo. Key ổn định để gallery xoá đúng tấm.
+  const [pendingScenePhotos, setPendingScenePhotos] = useState<{ key: string; picked: PickedPhoto }[]>([]);
   const refreshTick = useAppStore((s) => s.refreshTick);
   const bump = useAppStore((s) => s.bump);
 
@@ -51,6 +59,16 @@ export default function LocationsScreen() {
   const workRef = useRef<FlatRow[] | null>(null);
   const flatRef = useRef<FlatRow[]>([]);
   const lastDragEndAt = useRef(0);
+
+  // ----- Đánh dấu + cuộn tới vị trí vừa tạo -----
+  const listRef = useRef<FlatList<FlatRow>>(null);
+  const pendingFocusRef = useRef<string | null>(null);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [newLocId, setNewLocId] = useState<string | null>(null);
+  // Popup thông báo dùng chung (1 nút "Đã hiểu") thay hộp thoại hệ thống
+  const [infoPopup, setInfoPopup] = useState<{ title: string; message?: string } | null>(null);
+  const showInfo = (title: string, message?: string) => setInfoPopup({ title, message });
 
   const load = useCallback(async () => {
     const locs = await listLocations();
@@ -134,9 +152,40 @@ export default function LocationsScreen() {
     flatRef.current = flat;
   });
 
+  useEffect(() => () => {
+    if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+  }, []);
+
   // Mọi thứ hiển thị/kéo thả thao tác trên renderedRows (phần đang hiển thị);
   // mảng đầy đủ `flat` chỉ còn dùng để ghép thứ tự khi lưu kéo thả + tìm độ sâu.
   const displayFlat = workFlat ?? renderedRows;
+
+  // Cuộn tới vị trí vừa tạo: chờ hàng của nó xuất hiện trong renderedRows
+  // (dữ liệu đã reload + tổ tiên đã mở rộng). Nếu khối gốc chứa nó đang nằm
+  // ngoài phần hiển thị (phân trang theo khối gốc) thì mở thêm khối trước.
+  // Hàng cao cố định (STRIDE) nên offset tính chính xác theo chỉ số hàng.
+  useEffect(() => {
+    const target = pendingFocusRef.current;
+    if (!target) return;
+    const fi = flat.findIndex((r) => r.loc.id === target);
+    if (fi < 0) return;
+    let rootIdx = -1;
+    for (let i = 0; i <= fi; i++) if (flat[i].depth === 0) rootIdx++;
+    if (rootIdx >= shownRoots) {
+      setVisibleRootCount(rootIdx + 1);
+      return;
+    }
+    const ri = renderedRows.findIndex((r) => r.loc.id === target);
+    if (ri < 0) return;
+    pendingFocusRef.current = null;
+    if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    // Timer để trong ref (không dọn ở cleanup của effect) vì load() setState
+    // nhiều đợt — cleanup sẽ huỷ mất lần cuộn đã hẹn
+    scrollTimer.current = setTimeout(() => {
+      listRef.current?.scrollToOffset({ offset: Math.max(0, 6 + ri * STRIDE - 76), animated: true });
+    }, 90);
+  }, [flat, renderedRows, shownRoots]);
 
   /** Tập id thuộc khối đang kéo (node + hậu duệ đang hiển thị) — để nhấc cả khối */
   const dragBlockIds = useMemo(() => {
@@ -278,32 +327,126 @@ export default function LocationsScreen() {
   // nên không xung đột. dy được tính từ pageY tại thời điểm giành responder —
   // ngón tay gần như đứng yên trong 350ms nhấn giữ nên sai lệch không đáng kể.
 
+  // ----- Ảnh hiện trường cho vị trí mới: trần theo gói (maxScenePhotos)
+  // dùng CHUNG thông báo chạm trần với bucket hiện trường của đồ vật -----
+  const scenePhotoLimit = getCurrentLimits().maxScenePhotos;
+
+  async function addLocSceneFromCamera() {
+    if (pendingScenePhotos.length >= scenePhotoLimit) {
+      showInfo(t('loc.limitTitle'), t('photos.sceneLimitMsg', { n: scenePhotoLimit }));
+      return;
+    }
+    const picked = await takePhoto();
+    if (!picked) return;
+    setPendingScenePhotos((prev) => [...prev, { key: uuid(), picked }]);
+  }
+
+  async function addLocSceneFromLibrary() {
+    const remaining = scenePhotoLimit - pendingScenePhotos.length;
+    if (remaining <= 0) {
+      showInfo(t('loc.limitTitle'), t('photos.sceneLimitMsg', { n: scenePhotoLimit }));
+      return;
+    }
+    const picked = await pickPhotos(remaining);
+    if (picked.length === 0) return;
+    // Một số máy bỏ qua selectionLimit: chỉ lấy đến trần và báo giới hạn
+    if (picked.length > remaining) {
+      showInfo(t('loc.limitTitle'), t('photos.sceneLimitMsg', { n: scenePhotoLimit }));
+    }
+    setPendingScenePhotos((prev) => [
+      ...prev,
+      ...picked.slice(0, remaining).map((p) => ({ key: uuid(), picked: p })),
+    ]);
+  }
+
+  function removePendingScenePhoto(key: string) {
+    // Ảnh đang chờ chưa hề ghi xuống DB/file của app nên xoá = bỏ khỏi
+    // danh sách chờ (đúng cơ chế ảnh pending của quick-add)
+    setPendingScenePhotos((prev) => prev.filter((p) => p.key !== key));
+  }
+
+  /** Đóng modal tạo vị trí: ảnh chờ thuộc về đúng phiên nhập đó nên dọn luôn */
+  function closeCreateModal() {
+    setModalParent(undefined);
+    setPendingScenePhotos([]);
+  }
+
   async function handleCreate() {
     if (!newName.trim()) return;
     const total = await countLocations();
-    if (total >= CURRENT_LIMITS.maxLocations) {
-      Alert.alert(t('loc.limitTitle'), t('loc.limitLocMsg', { n: CURRENT_LIMITS.maxLocations }));
+    if (total >= getCurrentLimits().maxLocations) {
+      showInfo(t('loc.limitTitle'), t('loc.limitLocMsg', { n: getCurrentLimits().maxLocations }));
       return;
     }
     const parent = modalParent ?? null;
     const parentDepth = parent ? flat.find((f) => f.loc.id === parent.id)?.depth ?? 0 : -1;
     const type = TYPE_BY_DEPTH[Math.min(3, parentDepth + 1)];
+    let created: Location;
     try {
-      const created = await createLocation({
+      created = await createLocation({
         name: newName.trim(),
         type,
         parent_id: parent?.id ?? null,
         icon: newIcon,
       });
-      if (parent) setExpanded((s) => new Set(s).add(parent.id));
+    } catch (e) {
+      // Tạo vị trí THẤT BẠI: modal giữ nguyên — tên và ảnh đang chờ không
+      // mất, người dùng sửa rồi thử lại được
+      showInfo(t('loc.createFail'), e instanceof Error ? e.message : String(e));
+      return;
+    }
+    // Vị trí đã có id: đăng ký các ảnh hiện trường đang chờ NGAY BÂY GIỜ,
+    // tấm đầu tiên là ảnh chính (cờ is_primary của media — đúng cơ chế
+    // trang chi tiết vị trí đang đọc để hiện huy hiệu "Chính" và xếp thứ
+    // tự; locations.scene_media_id chưa có hàm ghi sẵn nên không dùng).
+    // Lỗi đăng ký ảnh không huỷ vị trí vừa tạo.
+    let photoError: string | null = null;
+    try {
+      for (let i = 0; i < pendingScenePhotos.length; i++) {
+        await processAndRegisterPhoto(pendingScenePhotos[i].picked, 'LOCATION', created.id, 'LOCATION_SCENE', i === 0);
+      }
+    } catch (e) {
+      photoError = e instanceof Error ? e.message : String(e);
+    }
+    try {
+      // Mở rộng TOÀN BỘ chuỗi tổ tiên để hàng vị trí mới hiện ra, kể cả khi
+      // các tổ tiên đang thu gọn (trước đây chỉ mở đúng cha trực tiếp)
+      const parentById = new Map(locations.map((l) => [l.id, l.parent_id]));
+      const ancestors: string[] = [];
+      let cur: string | null = parent?.id ?? null;
+      while (cur) {
+        ancestors.push(cur);
+        cur = parentById.get(cur) ?? null;
+      }
+      if (ancestors.length > 0) {
+        setExpanded((s) => {
+          const next = new Set(s);
+          for (const a of ancestors) next.add(a);
+          return next;
+        });
+      }
+      // Đánh dấu vị trí mới: hàng được highlight + pill "Mới", tự tắt sau
+      // 4 giây; effect theo dõi renderedRows sẽ cuộn tới khi hàng xuất hiện.
+      // newLocId là state của màn nên các lần reload dữ liệu không làm mất
+      // highlight trước khi hết giờ.
+      pendingFocusRef.current = created.id;
+      setNewLocId(created.id);
+      if (highlightTimer.current) clearTimeout(highlightTimer.current);
+      highlightTimer.current = setTimeout(() => {
+        setNewLocId(null);
+        pendingFocusRef.current = null;
+      }, 4000);
       setNewName('');
       setNewIcon(null);
+      setPendingScenePhotos([]);
       setModalParent(undefined);
       bump();
-      void created;
     } catch (e) {
-      Alert.alert(t('loc.createFail'), e instanceof Error ? e.message : String(e));
+      showInfo(t('loc.createFail'), e instanceof Error ? e.message : String(e));
     }
+    // Vị trí đã tạo xong xuôi mới báo lỗi ảnh (nếu có) để không che mất
+    // luồng thành công phía trên
+    if (photoError) showInfo(t('loc.createFail'), photoError);
   }
 
   return (
@@ -336,6 +479,7 @@ export default function LocationsScreen() {
           style={[styles.button, { paddingVertical: 10, paddingHorizontal: 14 }]}
           onPress={() => {
             setNewIcon(null);
+            setPendingScenePhotos([]);
             setModalParent(null);
           }}
         >
@@ -345,6 +489,7 @@ export default function LocationsScreen() {
       </View>
 
       <FlatList
+        ref={listRef}
         data={displayFlat}
         extraData={`${dragId ?? ''}|${dragDy}`}
         keyExtractor={({ loc }) => loc.id}
@@ -358,8 +503,14 @@ export default function LocationsScreen() {
               style={[
                 styles.card,
                 {
-                  marginLeft: depth * 14, height: ROW_H, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 13,
+                  // Thụt lề bằng paddingLeft (không marginLeft) để thẻ trải hết
+                  // bề ngang: các vạch dẫn cây vẽ trong vùng thụt lề mới liền
+                  // mạch được. Chiều cao hàng không đổi → toán kéo thả (STRIDE)
+                  // không bị ảnh hưởng.
+                  height: ROW_H, flexDirection: 'row', alignItems: 'center', gap: 8,
+                  paddingVertical: 13, paddingRight: 13, paddingLeft: 13 + depth * 14,
                 },
+                loc.id === newLocId && { backgroundColor: tint(Colors.primary, '16'), borderColor: Colors.primary },
                 inDragBlock && {
                   transform: [{ translateY: dragDy }],
                   zIndex: 20,
@@ -372,6 +523,17 @@ export default function LocationsScreen() {
                 },
               ]}
             >
+              {/* Vạch dẫn dọc theo từng cấp tổ tiên: x = tâm chevron của tổ
+                  tiên cấp a (paddingLeft 13 + a*14, ô chevron rộng 22 → tâm
+                  +11). Mỗi hàng tự vẽ đoạn của mình nên khi cuộn dài vẫn đọc
+                  được cấu trúc lồng nhau. */}
+              {depth > 0 && Array.from({ length: depth }, (_, a) => (
+                <View
+                  key={`guide-${a}`}
+                  pointerEvents="none"
+                  style={{ position: 'absolute', left: 24 + a * 14, top: 0, bottom: 0, width: 1.5, backgroundColor: Colors.border }}
+                />
+              ))}
               <TouchableOpacity
                 onPress={() => {
                   if (!hasChildren) return;
@@ -387,7 +549,7 @@ export default function LocationsScreen() {
                 style={{ width: 22, alignItems: 'center' }}
               >
                 {hasChildren && (
-                  <Ionicons name={expanded.has(loc.id) ? 'chevron-down' : 'chevron-forward'} size={18} color={Colors.subtext} />
+                  <Ionicons name={expanded.has(loc.id) ? 'chevron-down' : 'chevron-forward'} size={20} color={Colors.primary} />
                 )}
               </TouchableOpacity>
               <TouchableOpacity
@@ -403,7 +565,13 @@ export default function LocationsScreen() {
               >
                 <IconTile icon={locationIconName(loc)} color={LOCATION_TYPE_COLORS[loc.type]} size={48} iconSize={24} />
                 <View style={{ flex: 1 }}>
-                  <Text numberOfLines={1} style={{ fontSize: 16, fontWeight: '700', color: Colors.text }}>{loc.name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    {depth > 0 && <Ionicons name="return-down-forward-outline" size={15} color={Colors.faint} />}
+                    <Text numberOfLines={1} style={{ flex: 1, fontSize: 16, fontWeight: '700', color: Colors.text }}>{loc.name}</Text>
+                    {loc.latitude != null && loc.longitude != null && (
+                      <Ionicons name="location" size={15} color={Colors.coral} />
+                    )}
+                  </View>
                   <Text numberOfLines={1} style={{ fontSize: 12, color: Colors.subtext, marginTop: 2 }}>
                     {locationTypeLabel(loc.type)}
                   </Text>
@@ -412,12 +580,18 @@ export default function LocationsScreen() {
               <View style={{ backgroundColor: Colors.chipBg, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 }}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.primaryDark }}>{t('loc.countItems', { n: counts[loc.id] ?? 0 })}</Text>
               </View>
+              {loc.id === newLocId && (
+                <View style={{ backgroundColor: Colors.primary, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 }}>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: '#fff' }}>{t('loc.newBadge')}</Text>
+                </View>
+              )}
               {depth < 3 && (
                 <TouchableOpacity
                   hitSlop={8}
                   disabled={dragId !== null}
                   onPress={() => {
                     setNewIcon(null);
+                    setPendingScenePhotos([]);
                     setModalParent(loc);
                   }}
                   style={{ backgroundColor: Colors.chipBg, borderRadius: 999, width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
@@ -443,28 +617,57 @@ export default function LocationsScreen() {
         }
       />
 
-      <Modal visible={modalParent !== undefined} transparent animationType="fade" onRequestClose={() => setModalParent(undefined)}>
+      <Modal visible={modalParent !== undefined} transparent animationType="fade" onRequestClose={closeCreateModal}>
         <View style={styles.modalOverlay}>
-          <View style={[styles.card, styles.modalCard, { gap: 14 }]}>
-            <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.text }}>
-              {modalParent ? t('loc.modalIn', { name: modalParent.name }) : t('loc.modalNew')}
-            </Text>
-            <TextInput style={styles.input} placeholder={t('loc.namePlaceholder')} value={newName} onChangeText={setNewName} autoFocus />
-            <View>
-              <Text style={styles.label}>{t('locations.iconLabel')}</Text>
-              <IconPickerGrid value={newIcon} onChange={setNewIcon} showDefaultOption />
-            </View>
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <TouchableOpacity style={[styles.buttonSecondary, { flex: 1 }]} onPress={() => setModalParent(undefined)}>
-                <Text style={styles.buttonSecondaryText}>{t('common.cancel')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.button, { flex: 1 }]} onPress={handleCreate}>
-                <Text style={styles.buttonText}>{t('common.create')}</Text>
-              </TouchableOpacity>
-            </View>
+          {/* Nội dung cuộn dọc + trần chiều cao: block ảnh hiện trường làm
+              modal cao hơn hẳn, máy nhỏ vẫn xem/bấm được mọi phần */}
+          <View style={[styles.card, styles.modalCard, { maxHeight: '92%' }]}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.text }}>
+                {modalParent ? t('loc.modalIn', { name: modalParent.name }) : t('loc.modalNew')}
+              </Text>
+              <TextInput style={styles.input} placeholder={t('loc.namePlaceholder')} value={newName} onChangeText={setNewName} autoFocus />
+              <View>
+                <Text style={styles.label}>{t('locations.iconLabel')}</Text>
+                <IconPickerGrid value={newIcon} onChange={setNewIcon} showDefaultOption />
+              </View>
+              {/* Ảnh hiện trường của vị trí mới: gallery mode 'edit' với
+                  ảnh ĐANG CHỜ (chưa có id vị trí) — tấm đầu tiên hiển thị
+                  huy hiệu "Chính" vì khi tạo xong nó được đăng ký với
+                  is_primary = 1; trần maxScenePhotos theo gói như bucket
+                  hiện trường của đồ vật */}
+              <PhotoGallery
+                title={t('photos.scene')}
+                titleColor={Colors.teal}
+                photos={pendingScenePhotos.map((p, i) => ({ key: p.key, uri: p.picked.uri, isPrimary: i === 0 }))}
+                takeLabel={t('qa.takePhoto')}
+                pickLabel={t('photos.addScene')}
+                onTake={() => { addLocSceneFromCamera().catch(() => {}); }}
+                onPick={() => { addLocSceneFromLibrary().catch(() => {}); }}
+                onRemove={(e) => removePendingScenePhoto(e.key)}
+                maxReached={pendingScenePhotos.length >= scenePhotoLimit}
+                limitText={t('photos.sceneLimitMsg', { n: scenePhotoLimit })}
+              />
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity style={[styles.buttonSecondary, { flex: 1 }]} onPress={closeCreateModal}>
+                  <Text style={styles.buttonSecondaryText}>{t('common.cancel')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, { flex: 1 }]} onPress={handleCreate}>
+                  <Text style={styles.buttonText}>{t('common.create')}</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
+
+      <AppPopup
+        visible={!!infoPopup}
+        title={infoPopup?.title ?? ''}
+        message={infoPopup?.message}
+        okLabel={t('common.gotIt')}
+        onClose={() => setInfoPopup(null)}
+      />
     </View>
   );
 }

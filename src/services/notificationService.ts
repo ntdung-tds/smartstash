@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { getCurrentLang } from '../theme';
 import { translate } from '../i18n';
-import { listItems, listActiveLoans } from '../db/queries';
+import { listItems, listActiveLoans, listActiveConsignments, outstandingOf } from '../db/queries';
 import { getAlertSettings } from './alertSettings';
 import { isAlertSnoozed } from '../utils';
 import type { Item } from '../types';
@@ -205,6 +205,9 @@ export async function rescheduleAllReminders(): Promise<void> {
     }
 
     // ---- Hạn trả: từng khoản vay riêng, không gộp ----
+    // listActiveLoans chỉ trả record kind LOAN (gửi bán không có hạn trả,
+    // không nhắc đòi). Lượt còn nợ > 1 cái thì thân nhắc kèm "còn {n} cái
+    // chưa trả" theo outstanding chuẩn (lent − returned − closed).
     if (cfg.notifyLoan) {
       const loans = await listActiveLoans();
       for (const loan of loans) {
@@ -213,22 +216,24 @@ export async function rescheduleAllReminders(): Promise<void> {
           if (isAlertSnoozed(loan.alert_snoozed_until)) continue;
           const itemName = loan.item_name ?? nameById.get(loan.item_id) ?? '';
           const due = loan.expected_return_date;
+          const remain = outstandingOf(loan);
+          const qtySuffix = remain > 1 ? ` (${translate(lang, 'loan.remainQty', { n: remain })})` : '';
           await scheduleAt(
             atTime(due, -1, 9, 0),
             translate(lang, 'notif.loanDueTitle'),
-            translate(lang, 'alerts.notifLoanTomorrowBody', { name: itemName, borrower: loan.borrower_name }),
+            translate(lang, 'alerts.notifLoanTomorrowBody', { name: itemName, borrower: loan.borrower_name }) + qtySuffix,
             `alert-loan-${loan.id}-minus1`,
           );
           await scheduleAt(
             atTime(due, 0, 9, 0),
             translate(lang, 'notif.loanDueTitle'),
-            translate(lang, 'notif.loanDueBody', { name: itemName, borrower: loan.borrower_name }),
+            translate(lang, 'notif.loanDueBody', { name: itemName, borrower: loan.borrower_name }) + qtySuffix,
             `alert-loan-${loan.id}-due`,
           );
           await scheduleAt(
             atTime(due, 1, 9, 0),
             translate(lang, 'notif.loanOverdueTitle'),
-            translate(lang, 'notif.loanOverdueBody', { name: itemName, borrower: loan.borrower_name }),
+            translate(lang, 'notif.loanOverdueBody', { name: itemName, borrower: loan.borrower_name }) + qtySuffix,
             `alert-loan-${loan.id}-plus1`,
           );
           if (cfg.loanRepeat) {
@@ -236,13 +241,37 @@ export async function rescheduleAllReminders(): Promise<void> {
               await scheduleAt(
                 atTime(due, extra, 9, 0),
                 translate(lang, 'notif.loanOverdueTitle'),
-                translate(lang, 'alerts.notifLoanOverdueDaysBody', { name: itemName, borrower: loan.borrower_name, n: extra }),
+                translate(lang, 'alerts.notifLoanOverdueDaysBody', { name: itemName, borrower: loan.borrower_name, n: extra }) + qtySuffix,
                 `alert-loan-${loan.id}-plus${extra}`,
               );
             }
           }
         } catch {
           // một khoản mượn lỗi không chặn các khoản khác
+        }
+      }
+    }
+
+    // ---- Kiểm tra gửi bán: mỗi 30 ngày kể từ ngày gửi (+30/+60/+90) ----
+    // Record đã ngã ngũ không còn trong listActiveConsignments nên lần
+    // reschedule này (hàm huỷ toàn bộ lịch cũ ở đầu) tự dọn thông báo của
+    // chúng — không để mồ côi. Mốc đã qua bị scheduleAt tự bỏ qua.
+    if (cfg.consignRemind) {
+      const consignments = await listActiveConsignments();
+      for (const rec of consignments) {
+        try {
+          if (rec.status !== 'ACTIVE') continue;
+          const itemName = rec.item_name ?? nameById.get(rec.item_id) ?? '';
+          for (const k of [1, 2, 3]) {
+            await scheduleAt(
+              atTime(rec.lent_at, 30 * k, 9, 0),
+              translate(lang, 'consign.remindNotifTitle'),
+              translate(lang, 'consign.remindNotifBody', { item: itemName, holder: rec.borrower_name, days: 30 * k }),
+              `consign-${rec.id}-${k}`,
+            );
+          }
+        } catch {
+          // một record lỗi không chặn các record khác
         }
       }
     }

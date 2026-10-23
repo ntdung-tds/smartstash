@@ -6,9 +6,14 @@ export type ItemStatus =
   | 'IN_USE' // Đang dùng
   | 'LENT' // Đã cho mượn (toàn bộ)
   | 'PARTIALLY_LENT' // Đang cho mượn một phần
-  | 'SOLD' // Đã bán
-  | 'DISPOSED' // Đã vứt bỏ / hết
-  | 'LOST'; // Thất lạc [v2.1]
+  | 'CONSIGNED' // Đang gửi bán (KHÔNG kết thúc — món vẫn thuộc quản lý, đang ở chỗ người giữ hộ)
+  | 'DAMAGED' // Đã hỏng (vẫn đang quản lý, không phải trạng thái kết thúc)
+  | 'SOLD' // Đã bán (kết thúc)
+  | 'GIFTED' // Đã tặng (kết thúc)
+  | 'DONATED' // Đã bố thí (kết thúc)
+  | 'DISPOSED' // Đã vứt bỏ (kết thúc)
+  | 'LOST' // Thất lạc (kết thúc) [v2.1]
+  | 'USED_UP'; // Đã dùng hết (kết thúc)
 
 export type ItemCondition = 'NEW' | 'GOOD' | 'WORN' | 'NEED_REPAIR' | 'BROKEN';
 
@@ -91,6 +96,8 @@ export interface Item {
   sold_price: number | null;
   sold_date: string | null;
   sold_note: string | null;
+  /** Người mua khi món kết thúc bằng bán trọn (bán qua lượt mượn / gửi bán cũng ghi vào đây) */
+  sold_to: string | null;
   household_id: string | null;
   last_accessed_at: string | null;
   created_at: string;
@@ -111,6 +118,9 @@ export interface MediaFile {
   sync_status: 'PENDING' | 'UPLOADING' | 'SYNCED' | 'FAILED' | 'ORPHAN';
   sha256: string | null;
   size_bytes: number | null;
+  /** Ghim vị trí riêng của chính ảnh này (tỉ lệ 0–1) — chỉ có nghĩa với ảnh hiện trường */
+  pin_x: number | null;
+  pin_y: number | null;
   is_primary: number;
   created_at: string;
   updated_at: string;
@@ -122,10 +132,18 @@ export interface MediaFile {
 export interface Loan {
   id: string;
   item_id: string;
+  /** LOAN = cho mượn thông thường; CONSIGNMENT = gửi bán (borrower_name = người giữ hộ) */
+  kind: 'LOAN' | 'CONSIGNMENT';
   borrower_name: string;
   borrower_phone: string | null;
   quantity_lent: number;
   quantity_returned: number;
+  /** Phần đã "đóng" mà không quay về nhà: tặng/bán/bố thí từ lượt mượn, bán được từ gửi bán, hoặc tự đóng khi món kết thúc */
+  quantity_closed: number;
+  /** Lý do đóng khi record kết thúc: RETURNED | GIFTED | SOLD | DONATED | TO_CONSIGNMENT | CONSIGNMENT_SOLD | TAKEN_BACK | AUTO_CLOSED */
+  close_reason: string | null;
+  /** Giá mong muốn khi gửi bán (chỉ dùng cho kind = CONSIGNMENT) */
+  expected_price: number | null;
   lent_at: string;
   expected_return_date: string | null;
   /** Hoãn nhắc cảnh báo hạn trả tới ngày này (YYYY-MM-DD); null = không hoãn */
@@ -186,9 +204,14 @@ export const STATUS_LABELS: Record<ItemStatus, string> = {
   IN_USE: 'Đang dùng',
   LENT: 'Đã cho mượn',
   PARTIALLY_LENT: 'Cho mượn một phần',
+  CONSIGNED: 'Đang gửi bán',
+  DAMAGED: 'Đã hỏng',
   SOLD: 'Đã bán',
+  GIFTED: 'Đã tặng',
+  DONATED: 'Đã bố thí',
   DISPOSED: 'Đã vứt bỏ',
   LOST: 'Thất lạc',
+  USED_UP: 'Đã dùng hết',
 };
 
 export const CONDITION_LABELS: Record<ItemCondition, string> = {
@@ -246,9 +269,14 @@ export const STATUS_LABELS_EN: Record<ItemStatus, string> = {
   IN_USE: 'In use',
   LENT: 'Lent out',
   PARTIALLY_LENT: 'Partially lent',
+  CONSIGNED: 'On consignment',
+  DAMAGED: 'Damaged',
   SOLD: 'Sold',
+  GIFTED: 'Gifted',
+  DONATED: 'Donated',
   DISPOSED: 'Disposed',
   LOST: 'Lost',
+  USED_UP: 'Used up',
 };
 
 export const CONDITION_LABELS_EN: Record<ItemCondition, string> = {

@@ -5,7 +5,10 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "smartstash",
+    "scheme": [
+      "smartstash",
+      "com.smartstash.app"
+    ],
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"
@@ -60,7 +63,29 @@
           "cameraPermission": "Cho phép SmartStash dùng camera để quét mã QR và barcode.",
           "recordAudioAndroid": false
         }
-      ]
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SmartStash dùng vị trí hiện tại của bạn để ghim toạ độ cho một vị trí lưu trữ.",
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Cho phép SmartStash dùng Face ID / vân tay để mở khoá ứng dụng."
+        }
+      ],
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.276230190448-pvkfnsm6m9tu06fm6falp04d994h5qbk"
+        }
+      ],
+      "react-native-quick-crypto"
     ],
     "experiments": {
       "reactCompiler": true

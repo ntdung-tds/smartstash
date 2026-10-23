@@ -177,9 +177,14 @@ export const STATUS_COLORS: Record<ItemStatus, string> = {
   IN_USE: Colors.sky,
   LENT: Colors.orange,
   PARTIALLY_LENT: Colors.yellow,
+  CONSIGNED: '#2563EB',
+  DAMAGED: '#C0392B',
   SOLD: Colors.primary,
+  GIFTED: '#DB2777',
+  DONATED: '#B45309',
   DISPOSED: Colors.subtext,
   LOST: Colors.red,
+  USED_UP: '#0D9488',
 };
 
 export const STATUS_ICONS: Record<ItemStatus, IconName> = {
@@ -187,9 +192,14 @@ export const STATUS_ICONS: Record<ItemStatus, IconName> = {
   IN_USE: 'hand-left-outline',
   LENT: 'swap-horizontal',
   PARTIALLY_LENT: 'timer-outline',
+  CONSIGNED: 'storefront-outline',
+  DAMAGED: 'hammer',
   SOLD: 'cash-outline',
+  GIFTED: 'gift-outline',
+  DONATED: 'hand-left-outline',
   DISPOSED: 'trash-outline',
   LOST: 'search-outline',
+  USED_UP: 'battery-dead-outline',
 };
 
 export function statusColorFor(status: string): string {
@@ -218,6 +228,29 @@ export function statusIcon(status: string): IconName {
   const builtin = (STATUS_ICONS as Record<string, IconName>)[status];
   if (builtin) return builtin;
   return validIcon(customTermRegistry[status]?.icon, 'bookmark-outline');
+}
+
+// ---------- Nhóm trạng thái GỘP ở bộ lọc Trang chủ (chỉ gộp HIỂN THỊ/LỌC) ----------
+// Dữ liệu và các màn khác vẫn giữ từng trạng thái riêng; hai khoá 'grp:*' chỉ
+// tồn tại ở tầng lọc + ghim của Trang chủ. 'grp:lent' thay cho cả khoá lọc cũ
+// 'LENT_ALL'; 'grp:end' gom các trạng thái kết thúc vòng đời của món đồ.
+export type StatusGroupKey = 'grp:lent' | 'grp:end';
+
+export const STATUS_GROUPS: Record<StatusGroupKey, { members: ItemStatus[]; icon: IconName; color: string }> = {
+  'grp:lent': { members: ['LENT', 'PARTIALLY_LENT'], icon: STATUS_ICONS.LENT, color: STATUS_COLORS.LENT },
+  'grp:end': { members: ['SOLD', 'GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP'], icon: 'flag-outline', color: '#5B54A6' },
+};
+
+export function isStatusGroupKey(key: string): key is StatusGroupKey {
+  return key in STATUS_GROUPS;
+}
+
+/** Khoá nhóm chứa trạng thái này (null nếu trạng thái đứng riêng) — dùng khi chuẩn hoá ghim */
+export function statusGroupOf(status: string): StatusGroupKey | null {
+  for (const key of Object.keys(STATUS_GROUPS) as StatusGroupKey[]) {
+    if (STATUS_GROUPS[key].members.includes(status as ItemStatus)) return key;
+  }
+  return null;
 }
 
 export const CONDITION_COLORS: Record<ItemCondition, string> = {

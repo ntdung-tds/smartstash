@@ -112,6 +112,36 @@ export function daysUntil(isoDate: string | null | undefined): number | null {
   return Math.round((target.getTime() - today.getTime()) / 86400000);
 }
 
+/**
+ * Chọn mẫu tin NHẮC NGƯỜI MƯỢN theo trạng thái hạn trả của một lượt mượn:
+ * - Có hạn trả và ngày tới hạn ≤ soonDays: đã quá hạn → mẫu quá hạn
+ *   (alerts.remindMsgOverdue, params {item, borrower, days}); chưa quá hạn
+ *   → mẫu đến hạn (alerts.remindMsgDue, params {item, borrower}).
+ * - Không có hạn trả, hoặc hạn còn xa hơn soonDays → mẫu hỏi thăm nhẹ
+ *   không nhắc hạn (alerts.remindMsgCheckin, params {borrower, item, date}
+ *   với date là NGÀY MƯỢN đã định dạng DD/MM/YYYY).
+ * Trả về key i18n + params đã khớp placeholders của key đó; nơi gọi tự
+ * dịch bằng t() rồi Share — dùng chung cho banner/thẻ ở chi tiết đồ và
+ * thẻ ở tab Cho mượn để hai nơi luôn chọn cùng một kiểu lời nhắc.
+ */
+export function pickRemindMessage(args: {
+  borrower: string;
+  item: string;
+  lentAt: string;
+  due: string | null | undefined;
+  soonDays: number;
+}): { key: string; params: Record<string, string | number> } {
+  const { borrower, item, lentAt, due, soonDays } = args;
+  const days = daysUntil(due);
+  if (due && days != null && days <= soonDays) {
+    if (days < 0) {
+      return { key: 'alerts.remindMsgOverdue', params: { item, borrower, days: -days } };
+    }
+    return { key: 'alerts.remindMsgDue', params: { item, borrower } };
+  }
+  return { key: 'alerts.remindMsgCheckin', params: { borrower, item, date: formatDate(lentAt) } };
+}
+
 // ---------- Cảnh báo 4 mức ----------
 export interface AlertInfo {
   tier: AlertTier;

@@ -3,8 +3,9 @@ import {
   countActiveItems, countLocations, createItem, createLoan, createLocation,
   itemsInLocation, listLocations, listLoansForItem, returnLoan,
   setItemStatus, softDeleteItem, softDeleteLocation,
+  convertLoanToConsignment,
 } from '../db/queries';
-import { CURRENT_LIMITS } from '../config';
+import { getCurrentLimits } from './planService';
 import { rescheduleAllReminders } from './notificationService';
 import type { ItemCategory, ItemCondition, LocationType } from '../types';
 
@@ -97,6 +98,12 @@ const DEMO_ITEMS: DemoItemSpec[] = [
   { name: 'Bộ Lego lâu đài của bé', category: 'KIDS', loc: 4, price: 550000, boughtDaysAgo: 25, condition: 'NEW' },
   { name: 'Túi đựng đồ du lịch', category: 'OTHER', loc: 4, price: 150000, boughtDaysAgo: 70 },
   { name: 'Robot hút bụi', category: 'HOUSEHOLD', loc: 4, price: 4990000, boughtDaysAgo: 80, warrantyInDays: 285 },
+  { name: 'Quạt bàn mini', category: 'HOUSEHOLD', loc: 4, price: 320000, boughtDaysAgo: 400, condition: 'NEED_REPAIR', conditionNote: 'Nứt cánh quạt' },
+  // --- Món cho các trạng thái kết thúc mới (chuyển trạng thái sau khi seed) ---
+  { name: 'Sách "Nhà giả kim"', category: 'BOOKS', loc: 3, price: 95000, boughtDaysAgo: 400 },
+  { name: 'Pin AA Duracell (vỉ 4 viên)', category: 'HOUSEHOLD', loc: 1, quantity: 1, unit: 'Vỉ', price: 45000, boughtDaysAgo: 60 },
+  // --- Món gửi bán mẫu (tạo record CONSIGNMENT sau khi seed) ---
+  { name: 'Máy ảnh film Canon AE-1', category: 'ELECTRONICS', loc: 3, price: 4500000, boughtDaysAgo: 900, condition: 'WORN', conditionNote: 'Ống kính 50mm f/1.8, viewfinder hơi mốc nhẹ' },
 ];
 
 /** Tên món được dùng cho các trạng thái/khoản vay đặc biệt sau khi seed */
@@ -104,6 +111,10 @@ const LOAN_A_NAME = 'Máy khoan pin Bosch'; // Minh Anh mượn, hẹn trả +2 
 const LOAN_B_NAME = 'Bàn phím Logitech K380 dự phòng'; // Tuấn mượn, đã quá hạn 1 ngày
 const IN_USE_NAMES = ['Tai nghe Sony WH-1000XM4', 'Robot hút bụi'];
 const LOST_NAME = 'Bóng đá size 5';
+const GIFTED_NAME = 'Sách "Nhà giả kim"'; // → Đã tặng, kèm ghi chú người nhận
+const USED_UP_NAME = 'Pin AA Duracell (vỉ 4 viên)'; // → Đã dùng hết
+const DAMAGED_NAME = 'Quạt bàn mini'; // → Đã hỏng, kèm mô tả chỗ hỏng
+const CONSIGN_NAME = 'Máy ảnh film Canon AE-1'; // → Đang gửi bán tại Tiệm ảnh Lomo
 
 async function readSeedIds(): Promise<DemoSeedIds | null> {
   const raw = await kvGet(DEMO_KEY);
@@ -128,7 +139,7 @@ export async function seedDemoData(): Promise<{ items: number; locations: number
   const createdItemsByName = new Map<string, string>();
 
   // --- Vị trí mẫu (dừng êm khi chạm giới hạn gói) ---
-  let locRoom = CURRENT_LIMITS.maxLocations - (await countLocations());
+  let locRoom = getCurrentLimits().maxLocations - (await countLocations());
   for (const spec of DEMO_LOCATIONS) {
     if (locRoom <= 0) {
       createdLocIds.push(null);
@@ -145,7 +156,7 @@ export async function seedDemoData(): Promise<{ items: number; locations: number
   }
 
   // --- Món mẫu ---
-  let itemRoom = CURRENT_LIMITS.maxActiveItems - (await countActiveItems());
+  let itemRoom = getCurrentLimits().maxActiveItems - (await countActiveItems());
   for (const spec of DEMO_ITEMS) {
     if (itemRoom <= 0) break;
     const locationId = createdLocIds[spec.loc];
@@ -192,6 +203,31 @@ export async function seedDemoData(): Promise<{ items: number; locations: number
       // bỏ qua
     }
   }
+  // Các trạng thái mới đồng bộ theo app mẫu: Đã tặng / Đã dùng hết / Đã hỏng
+  const giftedId = createdItemsByName.get(GIFTED_NAME);
+  if (giftedId) {
+    try {
+      await setItemStatus(giftedId, 'GIFTED', { note: 'Tặng chị Hương ở công ty' });
+    } catch {
+      // bỏ qua
+    }
+  }
+  const usedUpId = createdItemsByName.get(USED_UP_NAME);
+  if (usedUpId) {
+    try {
+      await setItemStatus(usedUpId, 'USED_UP', { note: 'Đã dùng hết cho điều khiển TV và đồng hồ treo tường' });
+    } catch {
+      // bỏ qua
+    }
+  }
+  const damagedId = createdItemsByName.get(DAMAGED_NAME);
+  if (damagedId) {
+    try {
+      await setItemStatus(damagedId, 'DAMAGED', { note: 'Nứt cánh quạt, bấm không lên' });
+    } catch {
+      // bỏ qua
+    }
+  }
 
   // --- Khoản vay mẫu: 1 sắp đến hạn (+2 ngày), 1 đã quá hạn (−1 ngày) ---
   const loanAId = createdItemsByName.get(LOAN_A_NAME);
@@ -215,9 +251,31 @@ export async function seedDemoData(): Promise<{ items: number; locations: number
         borrower_name: 'Tuấn',
         quantity_lent: 1,
         expected_return_date: datePlus(-1),
+        note: 'Mượn dự phòng cho chuyến công tác',
       });
     } catch {
       // bỏ qua
+    }
+  }
+
+  // --- Gửi bán mẫu: tạo lượt mượn cho tiệm ảnh rồi chuyển toàn bộ thành
+  // record GỬI BÁN (đúng đường dữ liệu của tính năng chuyển đổi) ---
+  const consignItemId = createdItemsByName.get(CONSIGN_NAME);
+  if (consignItemId) {
+    try {
+      const holderLoan = await createLoan({
+        item_id: consignItemId,
+        borrower_name: 'Tiệm ảnh Lomo',
+        quantity_lent: 1,
+      });
+      await convertLoanToConsignment(holderLoan.id, {
+        qty: 1,
+        expectedPrice: 3900000,
+        note: 'Gửi bán hộ, hoa hồng 10% khi bán được',
+        uiNote: 'Gửi bán qua Tiệm ảnh Lomo · 3.900.000 đ',
+      });
+    } catch {
+      // bỏ qua nếu không tạo được record gửi bán mẫu
     }
   }
 

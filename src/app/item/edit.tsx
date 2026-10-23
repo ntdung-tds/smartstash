@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, TextInput, ScrollView, TouchableOpacity, Alert, Image, type AlertButton } from 'react-native';
+import { View, Text, TextInput, ScrollView, TouchableOpacity } from 'react-native';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { styles, Colors, AddTermModal, AppButton, Field, SceneImage, SectionTitle } from '@/components/ui';
+import { styles, Colors, AddTermModal, AppButton, Field, QtyInput, DateField, SectionTitle, AppPopup, PhotoGallery, type AppPopupOption } from '@/components/ui';
 import {
   categoryColor, categoryIcon, categoryLabel, statusColorFor, statusIcon, statusLabel,
   conditionColor, conditionHint, conditionIcon, conditionLabel, tint, type IconName,
@@ -13,12 +13,13 @@ import type { Item, ItemCategory, ItemCondition, ItemStatus, MediaFile } from '@
 import { CATEGORY_LABELS, STATUS_LABELS } from '@/types';
 import {
   getItem, updateItem, setItemStatus, listMediaForOwner, softDeleteMedia, setPrimaryMedia,
+  updateMediaPin, countActiveLoansForItem,
 } from '@/db/queries';
-import { takePhoto, pickPhoto, processAndRegisterPhoto } from '@/services/imageService';
+import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { useAppStore } from '@/store/useAppStore';
-import { CURRENT_LIMITS } from '@/config';
-import { maskDateInput, parseDisplayDate, formatDisplayDate } from '@/utils';
+import { getCurrentLimits } from '@/services/planService';
+import { parseDisplayDate, formatDisplayDate } from '@/utils';
 
 const CATEGORIES = Object.keys(CATEGORY_LABELS) as ItemCategory[];
 const STATUSES = Object.keys(STATUS_LABELS) as ItemStatus[];
@@ -46,6 +47,7 @@ export default function EditItemScreen() {
   const [condition, setCondition] = useState<string>('GOOD');
   const [conditionNote, setConditionNote] = useState('');
   const [quantity, setQuantity] = useState('1');
+  const [qtyError, setQtyError] = useState(false);
   const [unit, setUnit] = useState('Cái');
   const [positionNote, setPositionNote] = useState('');
   const [expiryDisplay, setExpiryDisplay] = useState('');
@@ -55,13 +57,17 @@ export default function EditItemScreen() {
   const [price, setPrice] = useState('');
   const [tagsText, setTagsText] = useState('');
   const [media, setMedia] = useState<MediaFile[]>([]);
-  const [pinX, setPinX] = useState<number | null>(null);
-  const [pinY, setPinY] = useState<number | null>(null);
   const [showAddCat, setShowAddCat] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [barcode, setBarcode] = useState<string | null>(null);
   const [showAddStatus, setShowAddStatus] = useState(false);
   const [showAddCond, setShowAddCond] = useState(false);
+  // Số lượt mượn đang mở của món — để cảnh báo khi đổi sang trạng thái kết thúc
+  const [activeLoanCount, setActiveLoanCount] = useState(0);
+  // Popup dùng chung thay hộp thoại hệ thống: không có options = thông
+  // báo/lỗi 1 nút "Đã hiểu"; có options = danh sách lựa chọn AppPopup
+  const [popup, setPopup] = useState<{ title: string; message?: string; options?: AppPopupOption[] } | null>(null);
+  const showInfo = (title: string, message?: string) => setPopup({ title, message });
   const bump = useAppStore((s) => s.bump);
   const customCategories = useAppStore((s) => s.customCategories);
   const customStatuses = useAppStore((s) => s.customStatuses);
@@ -101,40 +107,77 @@ export default function EditItemScreen() {
       setPrice(it.purchase_price != null ? String(it.purchase_price) : '');
       setTagsText(tagsToText(it.tags));
       setBarcode(it.barcode ?? null);
-      setPinX(it.pin_x);
-      setPinY(it.pin_y);
+      setActiveLoanCount(await countActiveLoansForItem(it.id));
       await refreshMedia(it.id);
     })();
   }, [id, refreshMedia]);
 
   const closeups = media.filter((m) => m.kind === 'ITEM_CLOSEUP');
-  const sceneMedia = item
-    ? media.find((m) => m.id === item.scene_media_id) ?? media.find((m) => m.kind === 'ITEM_SCENE') ?? null
-    : null;
+  const scenePhotos = media.filter((m) => m.kind === 'ITEM_SCENE');
   const primaryId = closeups.find((m) => m.is_primary === 1)?.id ?? closeups[0]?.id;
-  const pin = pinX != null && pinY != null ? { x: pinX, y: pinY } : null;
 
-  // ---------- Ảnh cận cảnh ----------
+  // ---------- Ảnh (gallery dùng chung): 2 bucket riêng — ảnh đồ vật và
+  // ảnh hiện trường — mỗi bucket có trần riêng theo gói (maxItemPhotos /
+  // maxScenePhotos trong PLAN_LIMITS) ----------
 
-  async function addCloseup(source: 'camera' | 'library') {
-    if (!item) return;
-    const picked = source === 'camera' ? await takePhoto() : await pickPhoto();
-    if (!picked) return;
-    await processAndRegisterPhoto(picked, 'ITEM', item.id, 'ITEM_CLOSEUP', closeups.length === 0);
-    await refreshMedia(item.id);
-    bump();
+  /** Lấy ảnh mới theo nguồn: camera = 1 tấm; thư viện = chọn nhiều trong 1 lần.
+   *  Trần tách theo bucket: đồ vật dùng maxItemPhotos, hiện trường maxScenePhotos */
+  async function acquirePhotos(
+    source: 'camera' | 'library',
+    bucketCount: number,
+    bucketLimit: number,
+    limitMsgKey: 'photos.limitMsg' | 'photos.sceneLimitMsg',
+  ): Promise<PickedPhoto[]> {
+    const remaining = bucketLimit - bucketCount;
+    if (remaining <= 0) {
+      showInfo(t('loc.limitTitle'), t(limitMsgKey, { n: bucketLimit }));
+      return [];
+    }
+    if (source === 'camera') {
+      const p = await takePhoto();
+      return p ? [p] : [];
+    }
+    const all = await pickPhotos(remaining);
+    // Một số máy bỏ qua selectionLimit: chỉ lấy đến trần và báo giới hạn
+    if (all.length > remaining) {
+      showInfo(t('loc.limitTitle'), t(limitMsgKey, { n: bucketLimit }));
+    }
+    return all.slice(0, remaining);
   }
 
-  function handleAddPhoto() {
-    if (closeups.length >= CURRENT_LIMITS.maxPhotosPerItem) {
-      Alert.alert(t('loc.limitTitle'), t('photos.limitMsg', { n: CURRENT_LIMITS.maxPhotosPerItem }));
-      return;
+  async function addPhotos(kind: 'ITEM_CLOSEUP' | 'ITEM_SCENE', source: 'camera' | 'library') {
+    if (!item) return;
+    const isCloseup = kind === 'ITEM_CLOSEUP';
+    const pickedList = await acquirePhotos(
+      source,
+      isCloseup ? closeups.length : scenePhotos.length,
+      isCloseup ? getCurrentLimits().maxItemPhotos : getCurrentLimits().maxScenePhotos,
+      isCloseup ? 'photos.limitMsg' : 'photos.sceneLimitMsg',
+    );
+    if (pickedList.length === 0) return;
+    if (isCloseup) {
+      // Chưa có ảnh chính thì tấm thêm đầu tiên nhận vai trò đó
+      let needPrimary = !closeups.some((m) => m.is_primary === 1);
+      for (const p of pickedList) {
+        await processAndRegisterPhoto(p, 'ITEM', item.id, 'ITEM_CLOSEUP', needPrimary);
+        needPrimary = false;
+      }
+    } else {
+      // scene_media_id luôn trỏ 1 tấm hiện trường (ảnh hiện trường chính);
+      // chưa có thì tấm thêm đầu tiên nhận vai trò đó, các tấm sau chỉ nằm
+      // trong gallery. Ghim là của riêng từng tấm, không liên quan việc này.
+      let mainSceneId = item.scene_media_id;
+      for (const p of pickedList) {
+        const reg = await processAndRegisterPhoto(p, 'ITEM', item.id, 'ITEM_SCENE', false);
+        if (!mainSceneId) mainSceneId = reg.id;
+      }
+      if (mainSceneId !== item.scene_media_id) {
+        await updateItem(item.id, { scene_media_id: mainSceneId });
+        setItem({ ...item, scene_media_id: mainSceneId });
+      }
     }
-    Alert.alert(t('photos.title'), undefined, [
-      { text: t('qa.takePhoto'), onPress: () => { addCloseup('camera').catch(() => {}); } },
-      { text: t('qa.pickPhoto'), onPress: () => { addCloseup('library').catch(() => {}); } },
-      { text: t('common.cancel'), style: 'cancel' },
-    ]);
+    await refreshMedia(item.id);
+    bump();
   }
 
   async function handleDeletePhoto(m: MediaFile) {
@@ -149,54 +192,28 @@ export default function EditItemScreen() {
     bump();
   }
 
-  function handlePhotoPress(m: MediaFile) {
+  async function handleDeleteScenePhoto(m: MediaFile) {
     if (!item) return;
-    const buttons: AlertButton[] = [];
-    if (m.id !== primaryId) {
-      buttons.push({
-        text: t('photos.setPrimary'),
-        onPress: () => {
-          (async () => {
-            await setPrimaryMedia('ITEM', item.id, m.id);
-            await refreshMedia(item.id);
-            bump();
-          })().catch(() => {});
-        },
-      });
+    await softDeleteMedia(m.id);
+    const list = await refreshMedia(item.id);
+    if (item.scene_media_id === m.id) {
+      // Ảnh hiện trường chính bị xoá: trỏ scene_media_id sang tấm hiện
+      // trường còn lại đầu tiên (hoặc null khi hết). Ghim của tấm bị xoá
+      // mất theo chính hàng media của nó — mỗi ảnh có ghim riêng, KHÔNG
+      // còn cơ chế chuyển ghim sang ảnh khác như mô hình cũ.
+      const nextId = list.find((x) => x.kind === 'ITEM_SCENE')?.id ?? null;
+      await updateItem(item.id, { scene_media_id: nextId });
+      setItem({ ...item, scene_media_id: nextId });
     }
-    buttons.push({ text: t('photos.delete'), style: 'destructive', onPress: () => { handleDeletePhoto(m).catch(() => {}); } });
-    buttons.push({ text: t('common.cancel'), style: 'cancel' });
-    Alert.alert(t('photos.title'), undefined, buttons);
-  }
-
-  // ---------- Ảnh hiện trường ----------
-
-  async function replaceScene(source: 'camera' | 'library') {
-    if (!item) return;
-    const picked = source === 'camera' ? await takePhoto() : await pickPhoto();
-    if (!picked) return;
-    const registered = await processAndRegisterPhoto(picked, 'ITEM', item.id, 'ITEM_SCENE', false);
-    await updateItem(item.id, { scene_media_id: registered.id });
-    setItem({ ...item, scene_media_id: registered.id });
-    await refreshMedia(item.id);
     bump();
   }
 
-  function handleSceneSource() {
-    Alert.alert(t('photos.scene'), undefined, [
-      { text: t('qa.takePhoto'), onPress: () => { replaceScene('camera').catch(() => {}); } },
-      { text: t('qa.pickPhoto'), onPress: () => { replaceScene('library').catch(() => {}); } },
-      { text: t('common.cancel'), style: 'cancel' },
-    ]);
-  }
-
-  async function handlePinChange(p: { x: number; y: number }) {
-    setPinX(p.x);
-    setPinY(p.y);
-    if (item) {
-      await updateItem(item.id, { pin_x: p.x, pin_y: p.y });
-      bump();
-    }
+  async function handlePinChange(mediaId: string, p: { x: number; y: number }) {
+    // Ghim riêng của từng ảnh hiện trường: cập nhật state ngay + lưu ngay
+    // vào chính hàng media đó (giữ nhịp lưu ngay như trước)
+    setMedia((prev) => prev.map((m) => (m.id === mediaId ? { ...m, pin_x: p.x, pin_y: p.y } : m)));
+    await updateMediaPin(mediaId, p.x, p.y);
+    bump();
   }
 
   // ---------- Lưu ----------
@@ -204,7 +221,15 @@ export default function EditItemScreen() {
   async function handleSave() {
     if (!item) return;
     if (!name.trim()) {
-      Alert.alert(t('qa.noNameTitle'), t('edit.noNameMsg'));
+      showInfo(t('qa.noNameTitle'), t('edit.noNameMsg'));
+      return;
+    }
+    // Số lượng BẮT BUỘC như ở form thêm mới: bị xoá trống / 0 / không
+    // phải số nguyên ≥ 1 thì chặn lưu, báo lỗi ngay tại trường (không
+    // còn mặc định im lặng về 1 như trước)
+    const qtyNum = /^\d+$/.test(quantity.trim()) ? parseInt(quantity, 10) : NaN;
+    if (isNaN(qtyNum) || qtyNum < 1) {
+      setQtyError(true);
       return;
     }
     const dateFields = [
@@ -217,7 +242,7 @@ export default function EditItemScreen() {
       if (f.display.trim()) {
         const iso = parseDisplayDate(f.display);
         if (!iso) {
-          Alert.alert(t('edit.badDateTitle', { label: t(f.labelKey) }), t('qa.badDateMsg'));
+          showInfo(t('edit.badDateTitle', { label: t(f.labelKey) }), t('qa.badDateMsg'));
           return;
         }
         parsed[f.labelKey] = iso;
@@ -231,7 +256,7 @@ export default function EditItemScreen() {
       category,
       condition,
       condition_note: conditionNote.trim() || null,
-      quantity: Math.max(1, parseInt(quantity, 10) || 1),
+      quantity: qtyNum,
       unit: unit.trim() || t('qa.unitDefault'),
       position_note: positionNote.trim() || null,
       expiry_date: parsed['edit.expiryName'],
@@ -266,47 +291,53 @@ export default function EditItemScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingBottom: 40, gap: 16 }]}>
-      {/* ===== ẢNH ===== */}
-      <View style={[styles.card, { gap: 14 }]}>
-        <SectionTitle title={t('photos.title')} color={Colors.coral} />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-            {closeups.map((m) => (
-              <TouchableOpacity key={m.id} onPress={() => handlePhotoPress(m)} activeOpacity={0.85}>
-                <Image source={{ uri: m.thumbnail_uri }} style={{ width: 84, height: 84, borderRadius: 18 }} />
-                {m.id === primaryId && (
-                  <View style={{ position: 'absolute', left: 6, bottom: 6, backgroundColor: Colors.primary, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2 }}>
-                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800', lineHeight: 14 }}>{t('photos.primary')}</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity
-              onPress={handleAddPhoto}
-              activeOpacity={0.85}
-              style={{
-                width: 84, height: 84, borderRadius: 18, borderWidth: 1.5, borderStyle: 'dashed',
-                borderColor: Colors.primary, backgroundColor: tint(Colors.primary, '10'),
-                alignItems: 'center', justifyContent: 'center', gap: 4,
-              }}
-            >
-              <Ionicons name="camera" size={24} color={Colors.primary} />
-              <Text style={{ fontSize: 11, fontWeight: '700', color: Colors.primary }}>{t('photos.add')}</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
+      {/* ===== ẢNH: 2 block độc lập, mỗi block một thẻ riêng ===== */}
+      <PhotoGallery
+        card
+        title={t('photos.item')}
+        titleColor={Colors.coral}
+        photos={closeups.map((m) => ({ key: m.id, uri: m.thumbnail_uri, fullUri: m.local_uri, isPrimary: m.id === primaryId }))}
+        takeLabel={t('qa.takePhoto')}
+        pickLabel={t('qa.pickPhoto')}
+        onTake={() => { addPhotos('ITEM_CLOSEUP', 'camera').catch(() => {}); }}
+        onPick={() => { addPhotos('ITEM_CLOSEUP', 'library').catch(() => {}); }}
+        onRemove={(e) => {
+          const m = closeups.find((x) => x.id === e.key);
+          if (m) handleDeletePhoto(m).catch(() => {});
+        }}
+        onSetPrimary={(e) => {
+          (async () => {
+            await setPrimaryMedia('ITEM', item.id, e.key);
+            await refreshMedia(item.id);
+            bump();
+          })().catch(() => {});
+        }}
+        maxReached={closeups.length >= getCurrentLimits().maxItemPhotos}
+        limitText={t('photos.limitMsg', { n: getCurrentLimits().maxItemPhotos })}
+      />
 
-        <Field label={t('photos.scene')}>
-          {sceneMedia ? (
-            <View style={{ gap: 10 }}>
-              <SceneImage uri={sceneMedia.local_uri} pin={pin} editable onPinChange={handlePinChange} height={220} />
-              <AppButton title={t('photos.replaceScene')} variant="secondary" icon="camera-outline" onPress={handleSceneSource} />
-            </View>
-          ) : (
-            <AppButton title={t('photos.addScene')} variant="secondary" icon="image-outline" onPress={handleSceneSource} />
-          )}
-        </Field>
-      </View>
+      <PhotoGallery
+        card
+        title={t('photos.scene')}
+        titleColor={Colors.teal}
+        photos={scenePhotos.map((m) => ({
+          key: m.id,
+          uri: m.thumbnail_uri,
+          fullUri: m.local_uri,
+          pin: m.pin_x != null && m.pin_y != null ? { x: m.pin_x, y: m.pin_y } : null,
+        }))}
+        takeLabel={t('qa.takePhoto')}
+        pickLabel={t('photos.addScene')}
+        onTake={() => { addPhotos('ITEM_SCENE', 'camera').catch(() => {}); }}
+        onPick={() => { addPhotos('ITEM_SCENE', 'library').catch(() => {}); }}
+        onRemove={(e) => {
+          const m = scenePhotos.find((x) => x.id === e.key);
+          if (m) handleDeleteScenePhoto(m).catch(() => {});
+        }}
+        maxReached={scenePhotos.length >= getCurrentLimits().maxScenePhotos}
+        limitText={t('photos.sceneLimitMsg', { n: getCurrentLimits().maxScenePhotos })}
+        onPinChange={(e, p) => { handlePinChange(e.key, p).catch(() => {}); }}
+      />
 
       {/* ===== THÔNG TIN ===== */}
       <View style={[styles.card, { gap: 14 }]}>
@@ -401,6 +432,25 @@ export default function EditItemScreen() {
             </TouchableOpacity>
           </ScrollView>
         </Field>
+        {/* Đổi sang trạng thái KẾT THÚC trong lúc món còn lượt mượn mở:
+            tầng dữ liệu sẽ tự đóng các lượt đó khi lưu — cảnh báo ngay tại
+            form để không đóng ngầm (DAMAGED không đóng nên không cảnh báo) */}
+        {status !== item.status
+          && (['SOLD', 'GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP'] as string[]).includes(status)
+          && activeLoanCount > 0 && (
+            <View
+              style={{
+                flexDirection: 'row', gap: 7, alignItems: 'flex-start',
+                backgroundColor: tint(Colors.orange, '16'), borderRadius: 12,
+                paddingHorizontal: 10, paddingVertical: 8,
+              }}
+            >
+              <Ionicons name="warning-outline" size={16} color={Colors.orange} style={{ marginTop: 1 }} />
+              <Text style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: Colors.text }}>
+                {t('loan.autoCloseWarn', { n: activeLoanCount })}
+              </Text>
+            </View>
+          )}
         <Field label={t('qa.conditionLabel')}>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
             {CONDITIONS.map((c) => (
@@ -458,7 +508,15 @@ export default function EditItemScreen() {
         <SectionTitle title={t('edit.qtySection')} color={Colors.teal} />
         <View style={{ flexDirection: 'row', gap: 10 }}>
           <Field label={t('qa.qtyLabel')} style={{ flex: 1 }}>
-            <TextInput style={styles.input} keyboardType="number-pad" value={quantity} onChangeText={setQuantity} />
+            <QtyInput
+              value={quantity}
+              onChangeText={(v) => { setQuantity(v); setQtyError(false); }}
+              placeholder={t('qa.qtyPlaceholder')}
+              invalid={qtyError}
+            />
+            {qtyError && (
+              <Text style={{ fontSize: 12.5, color: Colors.danger, lineHeight: 17 }}>{t('qa.qtyRequired')}</Text>
+            )}
           </Field>
           <Field label={t('qa.unitLabel')} style={{ flex: 1 }}>
             <TextInput style={styles.input} value={unit} onChangeText={setUnit} />
@@ -476,37 +534,16 @@ export default function EditItemScreen() {
           <TextInput style={styles.input} keyboardType="number-pad" value={price} onChangeText={setPrice} placeholder="1250000" placeholderTextColor={Colors.faint} />
         </Field>
         <Field label={t('qa.purchaseDateLabel')}>
-          <TextInput
-            style={styles.input}
-            keyboardType="number-pad"
-            value={purchaseDateDisplay}
-            onChangeText={(v) => setPurchaseDateDisplay(maskDateInput(v))}
-            placeholder={t('date.example')}
-            placeholderTextColor={Colors.faint}
-          />
+          <DateField value={purchaseDateDisplay} onChangeText={setPurchaseDateDisplay} placeholder={t('date.example')} title={t('qa.purchaseDateLabel')} />
         </Field>
         <Field label={t('qa.purchasePlaceLabel')}>
           <TextInput style={styles.input} value={purchasePlace} onChangeText={setPurchasePlace} placeholder={t('qa.purchasePlacePh')} placeholderTextColor={Colors.faint} />
         </Field>
         <Field label={t('qa.expiryLabel')}>
-          <TextInput
-            style={styles.input}
-            keyboardType="number-pad"
-            value={expiryDisplay}
-            onChangeText={(v) => setExpiryDisplay(maskDateInput(v))}
-            placeholder={t('date.example')}
-            placeholderTextColor={Colors.faint}
-          />
+          <DateField value={expiryDisplay} onChangeText={setExpiryDisplay} placeholder={t('date.example')} title={t('qa.expiryLabel')} />
         </Field>
         <Field label={t('edit.warrantyLabel')}>
-          <TextInput
-            style={styles.input}
-            keyboardType="number-pad"
-            value={warrantyDisplay}
-            onChangeText={(v) => setWarrantyDisplay(maskDateInput(v))}
-            placeholder={t('date.example')}
-            placeholderTextColor={Colors.faint}
-          />
+          <DateField value={warrantyDisplay} onChangeText={setWarrantyDisplay} placeholder={t('date.example')} title={t('edit.warrantyLabel')} />
         </Field>
         <Field label={t('qa.tagsLabel')} hint={t('qa.tagsHint')}>
           <TextInput style={styles.input} value={tagsText} onChangeText={setTagsText} placeholder={t('qa.tagsPh')} placeholderTextColor={Colors.faint} />
@@ -537,6 +574,14 @@ export default function EditItemScreen() {
         kind="CONDITION"
         onClose={() => setShowAddCond(false)}
         onAdded={(term) => setCondition(term.id)}
+      />
+      <AppPopup
+        visible={!!popup}
+        title={popup?.title ?? ''}
+        message={popup?.message}
+        options={popup?.options}
+        okLabel={t('common.gotIt')}
+        onClose={() => setPopup(null)}
       />
     </ScrollView>
   );

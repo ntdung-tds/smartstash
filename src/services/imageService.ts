@@ -44,6 +44,25 @@ export async function pickPhoto(): Promise<PickedPhoto | null> {
 }
 
 /**
+ * Chọn NHIỀU ảnh từ thư viện trong 1 lần (allowsMultipleSelection, SDK 58).
+ * selectionLimit = số slot còn lại để picker tự chặn; tầng gọi vẫn cắt
+ * phòng thủ + báo giới hạn vì một số máy bỏ qua selectionLimit.
+ */
+export async function pickPhotos(limit: number): Promise<PickedPhoto[]> {
+  if (limit <= 0) return [];
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!perm.granted) return [];
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'],
+    quality: 1,
+    allowsMultipleSelection: true,
+    selectionLimit: limit,
+  });
+  if (result.canceled || !result.assets) return [];
+  return result.assets.map((a) => ({ uri: a.uri, width: a.width, height: a.height }));
+}
+
+/**
  * Nén ảnh (cạnh dài tối đa 1280px, WebP trên Android / JPEG trên iOS — V21-10),
  * tạo thumbnail 300px, lưu vào thư mục app và đăng ký vào media_files.
  */
