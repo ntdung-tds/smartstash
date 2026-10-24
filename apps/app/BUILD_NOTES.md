@@ -59,3 +59,16 @@ Lưu ý: variant debug KHÔNG nhúng JS bundle (plugin RN chỉ tạo bundle cho
 - APK: `android/app/build/outputs/apk/release/app-release.apk`, 56.637.525 byte, com.smartstash.app v0.1.0 (versionCode 1), minSdk 24, targetSdk 36, 2 ABI. Đã kiểm chứng: `assets/index.android.bundle` có trong APK; font .ttf đã nhúng dạng resources (tên bị rút gọn do shrinkResources — bình thường ở release); apksigner verify đạt, chứng thư **debug** (CN=Android Debug) — bản này để test sideload, muốn lên Play Store cần keystore release riêng.
 - Bản bàn giao: `~/workspace/your_files/SmartStash-v0.1.0-release.apk` — thay thế vai trò của bản POC tiêm bundle (icon ở bản này hiển thị đủ).
 - Dự phòng icon (người dùng dặn chuẩn bị song song ở chat phụ): không cần triển khai nữa vì release đã xong.
+
+## Dời thư mục dự án — xoá cache Gradle (bài học 24/10/2026)
+
+Sau khi dời cây dự án sang vị trí mới (monorepo `apps/app`), build thất bại 3 lần
+với lỗi `Configuring project ':react-native-nitro-modules' ... does not exist`
+trỏ tới đường dẫn CŨ. Nguyên nhân thật: file phát sinh
+`android/build/generated/autolinking/autolinking.json` chứa đường dẫn tuyệt đối
+cũ, và vì `mv` giữ nguyên mtime nên Gradle tưởng nhiệm vụ tạo file đó vẫn
+"up-to-date" và dùng lại bản cũ. Xoá cache trong dự án (`.gradle`, `.cxx`,
+`app/build`) và configuration cache (`gradle-user-home/configuration-cache`)
+KHÔNG đủ — phải xoá cả `android/build` để nhiệm vụ autolinking chạy lại.
+Sau đó build sạch lần đầu biên dịch lại toàn bộ mã native nên lâu (~70 phút),
+các lần sau trở lại bình thường.
