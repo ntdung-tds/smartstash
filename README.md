@@ -1,56 +1,40 @@
-# Welcome to your Expo app 👋
+# SmartStash — Kho Đồ Số
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Monorepo cho SmartStash: app quản lý & định vị đồ đạc cá nhân (offline-first)
+và hệ thống quản trị đi kèm. Đội một người, Android trước, iOS sau.
 
-## Get started
+## Cấu trúc
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **src/app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```
+apps/app/     App React Native + Expo (TypeScript, SQLite/FTS5, Google Drive BYOC)
+apps/admin/   Hệ thống quản trị: PWA + Cloudflare Workers + D1 + KV
+docs/         Chỉ mục tài liệu (bản chính thức nằm ở kho tài liệu dự án — xem docs/README.md)
 ```
 
-This command will move the starter code to the **example** directory and create a blank **src/app** directory where you can start developing.
+## App (`apps/app/`)
 
-### Other setup steps
+Xem `apps/app/README.md` và `apps/app/BUILD_NOTES.md` (môi trường build Android
+offline đặc thù: JDK 17, Gradle 9.4.1, kho Maven local, build-tools 36.0.0).
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Build release (sau khi sửa code):
 
-## Learn more
+```bash
+BUILD_TASK=assembleRelease bash ~/build_loop.sh   # đã trỏ vào apps/app/android
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Lưu ý: thư mục `apps/app/android/` là thư mục native do Expo prebuild tạo ra
+và được gitignore theo chuẩn Expo — từ bản clone mới cần chạy prebuild trước,
+rồi áp lại các sửa tay cho AndroidManifest theo `BUILD_NOTES.md`.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Quản trị (`apps/admin/`)
 
-## Join the community
+Xem `apps/admin/README.md`. Triển khai lên Cloudflare (Pages + Workers + D1 +
+KV) theo hướng dẫn trong đó. Trang quản trị khoá bằng Cloudflare Access.
 
-Join our community of developers creating universal apps.
+## Quy tắc an toàn
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- **Không bao giờ commit** keystore, file `.key`, `.p12`, `.p8`, `.pem`,
+  `.dev.vars`, token hay mật khẩu. Khoá bí mật chỉ nằm ở Worker secrets và
+  trình quản lý mật khẩu của chủ sản phẩm.
+- Keystore phát hành do chủ sản phẩm giữ bản duy nhất (không nằm trong repo này).
+- Gói Family đã bị huỷ — không tạo sản phẩm Family trên RevenueCat.

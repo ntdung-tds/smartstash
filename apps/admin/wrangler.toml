@@ -1,0 +1,30 @@
+# SmartStash Admin — cấu hình Cloudflare Worker.
+# KHÔNG ghi bất kỳ bí mật nào vào file này. Secrets khai báo bằng:
+#   wrangler secret put REVENUECAT_SECRET_KEY
+#   wrangler secret put ADMIN_TOKEN
+#   wrangler secret put REVENUECAT_WEBHOOK_SECRET
+#   wrangler secret put DRIVE_CLIENT_EMAIL        (khi kích hoạt adapter Drive)
+#   wrangler secret put DRIVE_PRIVATE_KEY         (khi kích hoạt adapter Drive)
+#   wrangler secret put DRIVE_FOLDER_ID          (khi kích hoạt adapter Drive)
+#
+# Tạo D1 và KV trước, rồi thay các ID placeholder bên dưới bằng ID thật:
+#   wrangler d1 create smartstash-admin
+#   wrangler kv namespace create CONFIG
+
+name = "smartstash-admin"
+main = "src/index.js"
+compatibility_date = "2026-10-24"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smartstash-admin"
+database_id = "REPLACE_WITH_D1_ID"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_KV_ID"
+
+# Giai đoạn sau (khi chuyển tầng lưu trữ sang R2) mới mở binding này:
+# [[r2_buckets]]
+# binding = "BACKUPS"
+# bucket_name = "smartstash-backups"

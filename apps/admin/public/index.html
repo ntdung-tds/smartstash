@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#6D28D9">
+<title>Quản trị SmartStash</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Quản trị SmartStash</h1>
+  <p class="sub">Mã khuyến mãi · Quyền lợi · Cấu hình · Sao lưu</p>
+</header>
+
+<section id="settings" class="card">
+  <h2>Kết nối</h2>
+  <label>Địa chỉ Worker (API)
+    <input id="apiBase" type="url" placeholder="https://smartstash-admin.&lt;subdomain&gt;.workers.dev" autocomplete="off">
+  </label>
+  <label>ADMIN_TOKEN
+    <input id="adminToken" type="password" placeholder="Nhập 1 lần, lưu trên trình duyệt này" autocomplete="off">
+  </label>
+  <button id="saveSettings" type="button">Lưu kết nối</button>
+  <p class="hint">Token lưu ở localStorage của trình duyệt quản trị. Lớp bảo vệ chính thức là
+  Cloudflare Access đặt trước trang này khi triển khai (xem README).</p>
+  <p id="connStatus" class="status"></p>
+</section>
+
+<nav id="tabs" aria-label="Màn quản trị">
+  <button type="button" data-tab="promos" class="active">Mã khuyến mãi</button>
+  <button type="button" data-tab="log">Nhật ký đổi mã</button>
+  <button type="button" data-tab="grant">Cấp / thu hồi</button>
+  <button type="button" data-tab="config">Cờ cấu hình</button>
+  <button type="button" data-tab="backups">Sao lưu</button>
+</nav>
+
+<main>
+  <!-- Mã khuyến mãi -->
+  <section id="tab-promos" class="card tab">
+    <h2>Tạo mã mới</h2>
+    <form id="createPromoForm">
+      <label>Mã <input name="code" required placeholder="VD: TANG_THANG_1" autocomplete="off"></label>
+      <label>Quyền lợi <input name="entitlement" value="pro" required></label>
+      <label>Số ngày hiệu lực <input name="days" type="number" min="1" value="90" required></label>
+      <label>Tổng lượt tối đa <input name="max_uses" type="number" min="0" value="1" required></label>
+      <label>Đợt phát hành (campaign, tùy chọn) <input name="campaign" placeholder="VD: KOL_THANG_11"></label>
+      <label>Bắt đầu (tùy chọn) <input name="starts_at" type="datetime-local"></label>
+      <label>Hết hạn (tùy chọn) <input name="expires_at" type="datetime-local"></label>
+      <button type="submit">Tạo mã</button>
+    </form>
+    <p id="createPromoMsg" class="status"></p>
+    <h2>Danh sách mã</h2>
+    <button id="reloadPromos" type="button">Tải lại</button>
+    <div id="promoList" class="list"></div>
+  </section>
+
+  <!-- Nhật ký đổi mã -->
+  <section id="tab-log" class="card tab hidden">
+    <h2>Nhật ký đổi mã gần nhất</h2>
+    <button id="reloadLog" type="button">Tải lại</button>
+    <div id="logList" class="list"></div>
+  </section>
+
+  <!-- Cấp / thu hồi thủ công -->
+  <section id="tab-grant" class="card tab hidden">
+    <h2>Cấp quyền lợi thủ công</h2>
+    <form id="grantForm">
+      <label>RevenueCat App User ID <input name="account_id" required autocomplete="off"></label>
+      <label>Quyền lợi <input name="entitlement" value="pro" required></label>
+      <label>Số ngày <input name="days" type="number" min="1" value="30" required></label>
+      <button type="submit">Cấp quyền lợi</button>
+    </form>
+    <p id="grantMsg" class="status"></p>
+    <h2>Thu hồi quyền lợi tặng</h2>
+    <form id="revokeForm">
+      <label>RevenueCat App User ID <input name="account_id" required autocomplete="off"></label>
+      <label>Quyền lợi <input name="entitlement" value="pro" required></label>
+      <button type="submit">Thu hồi</button>
+    </form>
+    <p id="revokeMsg" class="status"></p>
+  </section>
+
+  <!-- Cờ cấu hình -->
+  <section id="tab-config" class="card tab hidden">
+    <h2>Cờ cấu hình từ xa</h2>
+    <form id="configForm">
+      <label class="check"><input name="self_promo_enabled" type="checkbox"> Bật ô nhập mã tự quản trong app
+        <span class="hint">Tắt = chốt chặn production: app ẩn ô nhập mã và từ chối đổi mã.</span></label>
+      <label>Phiên bản tối thiểu (trống = không ép cập nhật)
+        <input name="min_version" placeholder="VD: 0.2.0"></label>
+      <label>Thông báo bảo trì (trống = không hiện)
+        <input name="maintenance_notice" placeholder="VD: Hệ thống bảo trì từ 2h–4h sáng"></label>
+      <label>Ghi đè giới hạn gói (JSON, trống = dùng mặc định trong app)
+        <input name="plan_limits_override" placeholder='VD: {"max_items": 100}'></label>
+      <button type="submit">Lưu cấu hình</button>
+    </form>
+    <p id="configMsg" class="status"></p>
+  </section>
+
+  <!-- Sao lưu -->
+  <section id="tab-backups" class="card tab hidden">
+    <h2>Thống kê sao lưu "mây của tôi"</h2>
+    <button id="reloadBackups" type="button">Tải lại</button>
+    <div id="backupStats" class="list"></div>
+    <p class="hint">Tải lên/tải xuống qua adapter Drive hiện chưa kích hoạt (xem README).
+    Số liệu trên lấy từ bảng backup_files trong D1.</p>
+  </section>
+</main>
+
+<footer>
+  <p>SmartStash Admin · Chạy trên Cloudflare Workers + D1 + KV · Không có gói Family.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

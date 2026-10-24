@@ -1,0 +1,71 @@
+/* Quản trị SmartStash — CSS thuần, không tài nguyên ngoài. */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #f4f2fb;
+  color: #241254;
+  line-height: 1.5;
+}
+header { background: #241254; color: #fff; padding: 20px 16px; }
+header h1 { margin: 0; font-size: 22px; }
+header .sub { margin: 4px 0 0; opacity: 0.85; font-size: 14px; }
+main, #settings, #tabs, footer { max-width: 760px; margin: 0 auto; padding: 0 12px; }
+.card {
+  background: #fff;
+  border: 1px solid #e3def5;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+}
+h2 { font-size: 17px; margin: 16px 0 8px; }
+h2:first-child { margin-top: 0; }
+label { display: block; margin: 10px 0; font-size: 14px; font-weight: 600; }
+label input[type="text"],
+label input[type="url"],
+label input[type="password"],
+label input[type="number"],
+label input[type="datetime-local"],
+label input:not([type]) {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  font-size: 15px;
+  border: 1px solid #cfc6ec;
+  border-radius: 8px;
+}
+label.check { font-weight: 600; }
+label.check input { width: auto; display: inline; margin-right: 8px; }
+button {
+  background: #6d28d9;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 15px;
+  cursor: pointer;
+}
+button.secondary { background: #fff; color: #6d28d9; border: 1px solid #6d28d9; }
+button.danger { background: #b91c1c; }
+button:disabled { opacity: 0.5; cursor: default; }
+#tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+#tabs button { background: #fff; color: #241254; border: 1px solid #cfc6ec; padding: 8px 12px; font-size: 14px; }
+#tabs button.active { background: #6d28d9; color: #fff; border-color: #6d28d9; }
+.hidden { display: none; }
+.list { margin-top: 8px; }
+.row {
+  border: 1px solid #e3def5;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+.row .title { font-weight: 700; }
+.row .meta { color: #5b5570; font-size: 13px; }
+.row .actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.status { font-size: 14px; min-height: 20px; }
+.status.ok { color: #15803d; }
+.status.bad { color: #b91c1c; }
+.hint { font-size: 13px; color: #5b5570; font-weight: 400; }
+footer { padding: 16px 12px 32px; color: #5b5570; font-size: 13px; text-align: center; }

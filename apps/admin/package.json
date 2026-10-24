@@ -1,0 +1,1 @@
+{"description":"Hệ thống quản trị SmartStash: API mã khuyến mãi, quyền lợi, cấu hình từ xa và sao lưu — chạy trên Cloudflare Workers + D1 + KV","devDependencies":{"wrangler":"^3.0.0"},"name":"smartstash-admin","private":true,"scripts":{"db:apply":"wrangler d1 execute DB --file=schema.sql","deploy":"wrangler deploy","dev":"wrangler dev"},"type":"module","version":"1.0.0"}
