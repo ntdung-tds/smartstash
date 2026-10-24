@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, FlatList, ScrollView, TouchableOpacity, RefreshControl, StyleSheet,
+  View, Text, TextInput, FlatList, TouchableOpacity, RefreshControl, StyleSheet,
+  Image, ScrollView, useWindowDimensions,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { styles, Colors, ItemCard, SectionTitle, AddTermModal, AppButton, TAB_BAR_CLEARANCE } from '@/components/ui';
+import { styles, Colors, ItemCard, SectionTitle, AddTermModal, AppButton, AppPopup, TAB_BAR_CLEARANCE, type AppPopupOption } from '@/components/ui';
+import { kvGet, kvSet } from '@/db/client';
+import { takePhoto, pickPhoto, saveAvatarImage, removeAvatarImage } from '@/services/imageService';
 import {
-  categoryColor, categoryIcon, categoryLabel, statusColorFor, statusIcon, statusLabel, tint,
+  categoryColor, categoryIcon, categoryLabel, statusColorFor, statusIcon, statusLabel, tint, darken,
   ALERT_TIER_COLORS, alertTierColor, alertTierIcon,
   STATUS_GROUPS,
   type IconName,
@@ -104,9 +107,37 @@ function AlertGroupToggle({
 const BUILTIN_CATS = Object.keys(CATEGORY_LABELS) as ItemCategory[];
 const BUILTIN_STATUSES = Object.keys(STATUS_LABELS) as ItemStatus[];
 
-/** Chip lọc: icon + nhãn căn giữa; nhấn giữ để ghim/bỏ ghim */
+/** Khe giữa các ô trong 2 hàng cuộn ngang Phân loại / Trạng thái (dp):
+    6dp cho các ô sát nhau, đầy đặn (trước là 10dp, nhìn rời rạc). */
+const CELL_ROW_GAP = 6;
+
+/** Mốc thu gọn của thanh dọc THU GỌN ở danh sách đồ Trang chủ: bấm thanh
+    là danh sách quay về đúng 15 món đầu (người dùng chốt 24/10). */
+const COLLAPSE_TARGET = 15;
+
+/**
+ * Chip lọc trong HÀNG CUỘN NGANG 1 dòng (khối Trạng thái ở Trang chủ):
+ * bề ngang CỐ ĐỊNH theo vị trí trong hàng (`cellWidthAt` — đúng 1/3 khổ
+ * hàng như thẻ Phân loại, đã gồm phân bổ phần dư làm tròn) để 3 chip
+ * đầu luôn hiện TRỌN, chip thứ 4 trở đi cuộn ngang xem tiếp. Nhãn
+ * 12px căn giữa 1 dòng; icon mang màu trạng thái (bỏ chấm màu riêng —
+ * icon đã mang màu, như bản lưới v48) để chừa bề ngang cho nhãn: ở màn
+ * 360dp ô rộng 104, ngân sách nhãn = 104 − padding 10 − icon 13 − gap 4
+ * = 77dp, vừa tự nhiên các nhãn dài nhất ('Đã cho mượn' ≈ 6,17em ≈ 74dp
+ * ở 12px, 'Đang gửi bán' ≈ 73,8dp). adjustsFontSizeToFit (sàn 0,78) chỉ
+ * là lưới an toàn cho nhãn dài bất thường (EN 'On consignment', trạng
+ * thái tuỳ chỉnh tên dài) — co có kiểm soát thay vì cắt '…'. Huy hiệu
+ * ghim nằm ở góc trên-phải dạng badge để không ăn bề ngang nhãn. Nhấn
+ * giữ để ghim/bỏ ghim như cũ.
+ * NHẬN DIỆN RIÊNG TỪNG TRẠNG THÁI (v56): chip chưa chọn không còn nền
+ * trắng đồng loạt — nền TINT theo đúng màu của trạng thái đó (tint
+ * '18'), viền tint đậm hơn ('4D'), icon màu trạng thái, CHỮ là màu
+ * trạng thái đã sậm hoá bằng `darken` (cách sậm hoá nhất quán của
+ * theme) để đọc rõ trên nền tint kể cả màu sáng. Chip đang chọn giữ
+ * nền ĐẶC màu trạng thái + chữ/icon trắng như trước.
+ */
 function FilterChip({
-  label, icon, color, active, pinned, dashed, dot, onPress, onLongPress,
+  label, icon, color, active, pinned, dashed, cellW, onPress, onLongPress,
 }: {
   label: string;
   icon?: IconName;
@@ -114,7 +145,7 @@ function FilterChip({
   active: boolean;
   pinned?: boolean;
   dashed?: boolean;
-  dot?: string;
+  cellW: number;
   onPress: () => void;
   onLongPress?: () => void;
 }) {
@@ -124,20 +155,47 @@ function FilterChip({
       onLongPress={onLongPress}
       delayLongPress={300}
       style={{
-        height: 34, paddingHorizontal: 13, borderRadius: 999, marginRight: 8,
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-        backgroundColor: active ? color : '#fff',
+        width: cellW, height: 34, paddingHorizontal: 5, borderRadius: 999,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+        backgroundColor: active ? color : tint(color, '18'),
         borderWidth: 1.5, borderStyle: dashed ? 'dashed' : 'solid',
-        borderColor: active ? color : dashed ? Colors.primary : Colors.border,
+        borderColor: active ? color : tint(color, '4D'),
       }}
     >
-      {!!dot && (
-        <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: active ? '#fff' : dot }} />
+      {!!icon && <Ionicons name={icon} size={13} color={active ? '#fff' : color} />}
+      <Text
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.78}
+        style={{ fontSize: 12, fontWeight: '700', textAlign: 'center', flexShrink: 1, color: active ? '#fff' : darken(color) }}
+      >
+        {label}
+      </Text>
+      {pinned && (
+        <Ionicons
+          name="pin"
+          size={10}
+          color={active ? '#fff' : Colors.coral}
+          style={{ position: 'absolute', top: -2, right: 3 }}
+        />
       )}
-      {!!icon && <Ionicons name={icon} size={15} color={active ? '#fff' : color} />}
-      <Text style={{ fontSize: 13, fontWeight: '700', color: active ? '#fff' : Colors.primaryDark }}>{label}</Text>
-      {pinned && <Ionicons name="pin" size={11} color={active ? '#fff' : Colors.coral} />}
     </TouchableOpacity>
+  );
+}
+
+/**
+ * Ghi chú vuốt nhỏ ở bên phải hàng tiêu đề của các mục có hàng cuộn ngang
+ * (Phân loại / Trạng thái): icon hoán đổi + chữ 'Vuốt xem thêm' muted
+ * ~11.5px. Hiện CỐ ĐỊNH cho cả 2 mục vì danh sách của chúng luôn dài hơn
+ * bề ngang khung (12+ phân loại, 12+ trạng thái) — không cần đo tràn.
+ */
+function SwipeHint() {
+  const { t } = useT();
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+      <Ionicons name="swap-horizontal" size={13} color={Colors.faint} />
+      <Text style={{ fontSize: 11.5, fontWeight: '600', color: Colors.faint }}>{t('home.swipeHint')}</Text>
+    </View>
   );
 }
 
@@ -171,15 +229,22 @@ function GlassStatCell({ value, label, iconColor, icon }: { value: number; label
   );
 }
 
-/** Ô lớn khám phá theo phân loại: nền màu đặc, bấm để lọc / bấm lại để bỏ lọc */
+/**
+ * Ô lớn trong hàng Phân loại: nền màu đặc, cao 112, bề ngang ĐỘNG theo
+ * vị trí trong hàng (`cellWidthAt` — đúng 1/3 khổ hàng theo bề ngang
+ * màn hình thực, khe giữa các ô chỉ 6dp cho sát nhau) trong hàng cuộn
+ * ngang 1 dòng — 3 ô đầu luôn hiện TRỌN, ô thứ 4 trở đi cuộn xem tiếp.
+ * Bấm để lọc / bấm lại để bỏ lọc.
+ */
 function CategoryExploreTile({
-  label, icon, color, count, selected, onPress,
+  label, icon, color, count, selected, width, onPress,
 }: {
   label: string;
   icon: IconName;
   color: string;
   count: number;
   selected: boolean;
+  width: number;
   onPress: () => void;
 }) {
   const { t } = useT();
@@ -188,7 +253,7 @@ function CategoryExploreTile({
       onPress={onPress}
       activeOpacity={0.85}
       style={{
-        width: 104, height: 112, borderRadius: 22, padding: 12,
+        width, height: 112, borderRadius: 22, padding: 12,
         backgroundColor: color, justifyContent: 'space-between',
         borderWidth: selected ? 2.5 : 0, borderColor: '#fff',
         shadowColor: color, shadowOffset: { width: 0, height: 6 },
@@ -208,6 +273,25 @@ function CategoryExploreTile({
 
 export default function HomeScreen() {
   const { t } = useT();
+  const { width: windowWidth } = useWindowDimensions();
+  // Khổ ô cho 2 hàng cuộn ngang 1 dòng (Phân loại + Trạng thái): bề
+  // ngang ô = đúng 1/3 phần còn lại của khổ hàng (bề ngang màn hình −
+  // padding trang 18×2 − 2 khe CELL_ROW_GAP) và PHẦN DƯ do làm tròn
+  // xuống được cộng vào các ô đầu tiên (ô thứ i nhận +1dp khi i <
+  // cellRem) để 3 ô + 2 khe LẤP ĐẦY CHÍNH XÁC khổ hàng — không còn
+  // vệt trống thừa ở cuối hàng như công thức cũ (làm tròn xuống rồi bỏ
+  // phần dư). Màn 360dp: khổ hàng 324 → ô 104+104+104 + 2×6 = 324 ✓.
+  // Màn 412dp: khổ hàng 376 → ô 122+121+121 + 2×6 = 376 ✓. Sàn 84dp
+  // cho máy rất hẹp (khi đó giữ hành vi cũ, không phân bổ phần dư).
+  // 3 ô đầu luôn hiện TRỌN, ô thứ 4 trở đi cuộn ngang xem tiếp.
+  const rowAvail = Math.floor(windowWidth) - 36;
+  const cellRawBase = Math.floor((rowAvail - CELL_ROW_GAP * 2) / 3);
+  const cellBase = Math.max(84, cellRawBase);
+  const cellRem = cellRawBase >= 84 ? rowAvail - CELL_ROW_GAP * 2 - cellRawBase * 3 : 0;
+  const cellWidthAt = useCallback(
+    (i: number) => cellBase + (i < cellRem ? 1 : 0),
+    [cellBase, cellRem],
+  );
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [catFilter, setCatFilter] = useState<string>('ALL');
@@ -230,9 +314,17 @@ export default function HomeScreen() {
   const [outMap, setOutMap] = useState<Record<string, { lentOut: number; consignedOut: number }>>({});
   const [totalActive, setTotalActive] = useState(0);
   const [locationCount, setLocationCount] = useState(0);
+  // Avatar người dùng ở hero: URI bền trong thư mục ảnh của app, lưu ở
+  // app_kv 'avatar_uri' nên tắt/mở app vẫn hiện lại đúng.
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [avatarMenu, setAvatarMenu] = useState(false);
   const [catCounts, setCatCounts] = useState<Record<string, number>>({});
   const [refreshing, setRefreshing] = useState(false);
   const listRef = useRef<FlatList<Item>>(null);
+  // Vị trí Y của tiêu đề mục "Kho đồ của bạn" bên trong header của FlatList
+  // (đo bằng onLayout, tương đối với đầu header) — thanh dọc THU GỌN dùng để
+  // cuộn trang về đúng đầu mục danh sách đồ.
+  const itemsSectionYRef = useRef(0);
   const refreshTick = useAppStore((s) => s.refreshTick);
   const customCategories = useAppStore((s) => s.customCategories);
   const customStatuses = useAppStore((s) => s.customStatuses);
@@ -250,6 +342,22 @@ export default function HomeScreen() {
   const [pageState, setPageState] = useState<{ sig: string; count: number }>({ sig: '', count: 10 });
   const visibleCount = pageState.sig === filterSig ? pageState.count : 10;
 
+  // Thanh dọc THU GỌN (Mẫu B, người dùng duyệt 24/10): trang đầu giữ nguyên
+  // 10 món, mở rộng bằng nút "Xem thêm" +20 như cũ; mốc thu gọn chốt 15 —
+  // thanh chỉ hiện khi số món THỰC ĐANG HIỂN THỊ vượt 15 (đã mở rộng quá
+  // mốc), bấm vào là về đúng 15 món đầu + cuộn về đầu mục danh sách, và
+  // thanh tự ẩn vì lúc đó không còn gì để thu gọn nữa.
+  const shownCount = Math.min(visibleCount, items.length);
+  const showCollapseRail = shownCount > COLLAPSE_TARGET;
+  const collapseRailLabel = t('home.showLess').toUpperCase().replace(/\s+/g, '').split('').join('\n');
+  const handleCollapseItems = useCallback(() => {
+    setPageState({ sig: filterSig, count: COLLAPSE_TARGET });
+    // Offset nội dung của tiêu đề mục = paddingTop của contentContainer (8)
+    // + Y đo trong header − 6dp đệm thở để tiêu đề không dính sát mép trên.
+    const offset = Math.max(0, itemsSectionYRef.current + 8 - 6);
+    listRef.current?.scrollToOffset({ offset, animated: true });
+  }, [filterSig]);
+
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 150); // debounce 150ms (B.18)
     return () => clearTimeout(t);
@@ -258,8 +366,10 @@ export default function HomeScreen() {
   const load = useCallback(async () => {
     const alertCfg = await getAlertSettings();
     setAlertCfgState(alertCfg);
+    const savedAvatar = await kvGet('avatar_uri');
+    setAvatarUri(savedAvatar || null);
     let result: Item[];
-    // Đang lọc theo MỘT trạng thái kết thúc đơn lẻ (SOLD/GIFTED/DISPOSED/LOST/USED_UP)?
+    // Đang lọc theo MỘT trạng thái kết thúc đơn lẻ (SOLD/GIFTED/DISPOSED/LOST/USED_UP/EXPIRED)?
     const isEndStatus = (STATUS_GROUPS['grp:end'].members as string[]).includes(statusFilter);
     if (debounced.trim()) {
       result = await searchItems(debounced);
@@ -370,6 +480,26 @@ export default function HomeScreen() {
     }, [load, refreshTick, loadTaxonomy]),
   );
 
+  /** Đổi avatar từ popup hero: chụp / thư viện qua đúng pipeline chọn ảnh
+      của app (imageService), lưu bền vào thư mục ảnh + app_kv, dọn file cũ */
+  async function handleAvatarPick(source: 'camera' | 'library') {
+    const photo = source === 'camera' ? await takePhoto() : await pickPhoto();
+    if (!photo) return;
+    const uri = await saveAvatarImage(photo);
+    const old = avatarUri;
+    await kvSet('avatar_uri', uri);
+    setAvatarUri(uri);
+    if (old && old !== uri) removeAvatarImage(old).catch(() => {});
+  }
+
+  /** Xoá avatar: gỡ đường dẫn khỏi app_kv + xoá file, quay về placeholder */
+  async function handleAvatarRemove() {
+    const old = avatarUri;
+    await kvSet('avatar_uri', '');
+    setAvatarUri(null);
+    if (old) removeAvatarImage(old).catch(() => {});
+  }
+
   /** Quét ở Trang chủ: trúng món -> chi tiết món; trúng vị trí -> chi tiết vị trí; còn lại -> tìm kiếm thường */
   async function handleHomeScanned(data: string) {
     const foundItem = await findItemByBarcode(data);
@@ -403,7 +533,7 @@ export default function HomeScreen() {
       // Chip lọc trạng thái theo thứ tự STATUS_LABELS: chỉ còn nhóm 'grp:lent'
       // gộp hiển thị — 1 chip nhóm tại vị trí LENT, PARTIALLY_LENT không có
       // chip riêng. Các trạng thái kết thúc (SOLD, GIFTED, DONATED, DISPOSED,
-      // LOST, USED_UP) có chip RIÊNG từng trạng thái (ghim/bỏ ghim theo khoá
+      // LOST, USED_UP, EXPIRED) có chip RIÊNG từng trạng thái (ghim/bỏ ghim theo khoá
       // của chính nó; lọc qua đường listItems tường minh nhờ grp:end), còn
       // CONSIGNED đứng chip đơn như các trạng thái đang quản lý khác;
       // trạng thái tự tạo nằm ở dãy riêng phía dưới.
@@ -438,6 +568,14 @@ export default function HomeScreen() {
           onPress: () => setStatusFilter(s),
         });
       }
+      // Danh sách chip trạng thái THỰC HIỂN (sau lọc ghim) + trạng thái
+      // tự tạo thực hiện — tính sẵn để hàng chip gán bề ngang theo đúng
+      // vị trí nối tiếp nhau (Tất cả = 0, rồi built-in, rồi tự tạo, rồi
+      // EXPIRING) qua cellWidthAt.
+      const visibleStatusChips = statusChips.filter((c) => c.visible);
+      const visibleCustomStatuses = customStatuses.filter(
+        (t) => !pinnedOnly || pinnedStatuses.includes(t.id),
+      );
       return (
       <View style={{ gap: 14, marginBottom: 14 }}>
         <View>
@@ -453,7 +591,26 @@ export default function HomeScreen() {
             {/* Vòng tròn viền mảnh tạo chiều sâu (Aurora Glass) */}
             <View pointerEvents="none" style={{ position: 'absolute', width: 250, height: 250, borderRadius: 125, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.14)', top: -130, left: -90 }} />
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text style={{ color: Colors.onDarkMuted, fontSize: 14 }}>{t('home.greeting')}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                {/* Avatar tròn — chạm để đổi (chụp / thư viện / xoá). Chưa có
+                    avatar thì placeholder nền primary + icon person */}
+                <TouchableOpacity
+                  onPress={() => setAvatarMenu(true)}
+                  activeOpacity={0.85}
+                  style={{
+                    width: 40, height: 40, borderRadius: 20, overflow: 'hidden',
+                    backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
+                    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.35)',
+                  }}
+                >
+                  {avatarUri ? (
+                    <Image source={{ uri: avatarUri }} style={{ width: 40, height: 40 }} />
+                  ) : (
+                    <Ionicons name="person" size={20} color="#fff" />
+                  )}
+                </TouchableOpacity>
+                <Text style={{ color: Colors.onDarkMuted, fontSize: 14 }}>{t('home.greeting')}</Text>
+              </View>
               <View
                 style={{
                   flexDirection: 'row', alignItems: 'center', gap: 7,
@@ -535,9 +692,15 @@ export default function HomeScreen() {
               const visibleRows = expanded ? rows : rows.slice(0, 3);
               return (
                 <View key={tier} style={{ gap: 5 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
-                    <Text style={{ fontSize: 12.5, fontWeight: '800', color, letterSpacing: 0.4, textDecorationLine: 'underline' }}>{t(`alerts.tier${tier}`)}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    {/* Nhãn mức cảnh báo dạng pill tint theo màu mức (KHÔNG
+                        gạch chân như trước): nền tint + chấm màu mức + chữ
+                        sậm hoá bằng darken — từng mức phân biệt rõ bằng
+                        chính màu của nó, số đếm nằm ngoài pill như cũ */}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: tint(color, '1A'), borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 }}>
+                      <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: color }} />
+                      <Text style={{ fontSize: 12.5, fontWeight: '800', color: darken(color), letterSpacing: 0.4 }}>{t(`alerts.tier${tier}`)}</Text>
+                    </View>
                     <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.faint }}>{rows.length}</Text>
                   </View>
                   {visibleRows.map((row, idx) => (
@@ -560,12 +723,18 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   onPress={() => setShowWatch(!showWatch)}
                   activeOpacity={0.75}
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
                 >
-                  <Ionicons name="eye-outline" size={15} color={ALERT_TIER_COLORS.WATCH} />
-                  <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '800', color: ALERT_TIER_COLORS.WATCH, letterSpacing: 0.4, textDecorationLine: 'underline' }}>
-                    {t('alerts.watchTitle', { d: alertCfgState.watchDays })}
-                  </Text>
+                  {/* Pill tint màu WATCH như các nhãn mức phía trên (bỏ
+                      gạch chân); khoảng flex:1 đẩy số đếm + chevron về
+                      mép phải như bố cục cũ */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: tint(ALERT_TIER_COLORS.WATCH, '1A'), borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 }}>
+                    <Ionicons name="eye-outline" size={14} color={ALERT_TIER_COLORS.WATCH} />
+                    <Text style={{ fontSize: 12.5, fontWeight: '800', color: darken(ALERT_TIER_COLORS.WATCH), letterSpacing: 0.4 }}>
+                      {t('alerts.watchTitle', { d: alertCfgState.watchDays })}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }} />
                   <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.faint }}>{watchRows.length}</Text>
                   <Ionicons name={showWatch ? 'chevron-up' : 'chevron-down'} size={15} color={Colors.subtext} />
                 </TouchableOpacity>
@@ -585,23 +754,36 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* Khám phá theo phân loại: bộ lọc phân loại DUY NHẤT — ô màu lớn,
-            bấm để lọc / bấm lại để bỏ lọc; ô đã ghim đứng trước */}
+        {/* Phân loại: bộ lọc phân loại DUY NHẤT — ô màu lớn bề ngang
+            ĐỘNG theo vị trí (1/3 khổ hàng, khe 6dp, lấp đầy chính xác
+            khổ hàng) trong HÀNG CUỘN NGANG 1 dòng: 3 ô đầu hiện TRỌN,
+            ô thứ 4 trở đi cuộn xem tiếp (bố cục 1 dòng theo phản hồi
+            người dùng; lưới 3 cột của v48 đã huỷ). Hàng tiêu đề có ghi
+            chú 'Vuốt xem thêm' bên phải để biết còn mục ngoài khung.
+            Bấm để lọc / bấm lại để bỏ lọc; ô đã ghim đứng trước */}
         <View style={{ gap: 10 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Ionicons name="compass-outline" size={15} color={Colors.teal} />
-            <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.subtext, letterSpacing: 0.3 }}>{t('home.explore')}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="compass-outline" size={15} color={Colors.teal} />
+              <Text style={{ fontSize: 13, fontWeight: '800', color: Colors.subtext, letterSpacing: 0.3 }}>{t('home.explore')}</Text>
+            </View>
+            <SwipeHint />
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingRight: 6, paddingVertical: 2 }}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: CELL_ROW_GAP, paddingVertical: 2, paddingRight: 4 }}
+          >
             <CategoryExploreTile
               label={t('filter.all')}
               icon="apps"
               color={Colors.deep}
               count={totalActive}
               selected={catFilter === 'ALL'}
+              width={cellWidthAt(0)}
               onPress={() => setCatFilter('ALL')}
             />
-            {orderedCats.map((c) => (
+            {orderedCats.map((c, i) => (
               <CategoryExploreTile
                 key={c.key}
                 label={c.label}
@@ -609,15 +791,16 @@ export default function HomeScreen() {
                 color={c.color}
                 count={catCounts[c.key] ?? 0}
                 selected={catFilter === c.key}
+                width={cellWidthAt(i + 1)}
                 onPress={() => setCatFilter(catFilter === c.key ? 'ALL' : c.key)}
               />
             ))}
-            {/* Ô Thêm phân loại: viền đứt nét, nền trắng */}
+            {/* Ô Thêm phân loại: viền đứt nét, nền trắng — cùng khổ ô theo vị trí ×112 */}
             <TouchableOpacity
               onPress={() => setShowAddCat(true)}
               activeOpacity={0.85}
               style={{
-                width: 104, height: 112, borderRadius: 22, padding: 12,
+                width: cellWidthAt(orderedCats.length + 1), height: 112, borderRadius: 22, padding: 12,
                 backgroundColor: '#fff', justifyContent: 'space-between',
                 borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
               }}
@@ -637,70 +820,82 @@ export default function HomeScreen() {
         <View style={{ gap: 8 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <FilterGroupLabel icon="flag-outline" text={t('home.groupStatus')} />
-            {(pinnedStatuses.length > 0 || pinnedOnly) && (
-              <TouchableOpacity
-                onPress={() => setPinnedOnly(!pinnedOnly)}
-                style={{
-                  height: 26, paddingHorizontal: 10, borderRadius: 999,
-                  flexDirection: 'row', alignItems: 'center', gap: 4,
-                  backgroundColor: pinnedOnly ? Colors.coral : '#fff',
-                  borderWidth: 1.5, borderColor: pinnedOnly ? Colors.coral : Colors.border,
-                }}
-              >
-                <Ionicons name="pin" size={12} color={pinnedOnly ? '#fff' : Colors.coral} />
-                <Text style={{ fontSize: 11, fontWeight: '800', color: pinnedOnly ? '#fff' : Colors.primaryDark }}>{t('home.pinned')}</Text>
-              </TouchableOpacity>
-            )}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <SwipeHint />
+              {(pinnedStatuses.length > 0 || pinnedOnly) && (
+                <TouchableOpacity
+                  onPress={() => setPinnedOnly(!pinnedOnly)}
+                  style={{
+                    height: 28, paddingHorizontal: 10, borderRadius: 999,
+                    flexDirection: 'row', alignItems: 'center', gap: 4,
+                    backgroundColor: pinnedOnly ? Colors.coral : '#fff',
+                    borderWidth: 1.5, borderColor: pinnedOnly ? Colors.coral : Colors.border,
+                  }}
+                >
+                  <Ionicons name="pin" size={12} color={pinnedOnly ? '#fff' : Colors.coral} />
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: pinnedOnly ? '#fff' : Colors.primaryDark }}>{t('home.pinned')}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
           {pinnedOnly && pinnedStatuses.length === 0 ? (
             <Text style={{ fontSize: 13, color: Colors.faint }}>{t('home.pinEmpty')}</Text>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            /* Hàng chip cuộn ngang 1 DÒNG (lưới 3 cột của v48 đã huỷ
+               theo phản hồi người dùng): chip bề ngang CỐ ĐỊNH theo vị
+               trí như thẻ Phân loại (cellWidthAt — khe 6dp, 3 chip đầu
+               lấp đầy chính xác khổ hàng) — 3 chip đầu hiện TRỌN, chip
+               thứ 4 trở đi cuộn xem tiếp; giữ nguyên lọc + nhấn giữ
+               ghim/bỏ ghim. Hàng tiêu đề phía trên có ghi chú 'Vuốt xem
+               thêm' bên phải. paddingVertical 4 để huy hiệu ghim ở góc
+               chip không bị cắt. */
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: CELL_ROW_GAP, paddingVertical: 4, paddingRight: 4 }}
+            >
               <FilterChip
                 label={t('filter.all')}
                 icon="apps-outline"
                 color={Colors.primaryDark}
                 active={statusFilter === 'ALL'}
+                cellW={cellWidthAt(0)}
                 onPress={() => setStatusFilter('ALL')}
               />
-              {statusChips
-                .filter((c) => c.visible)
-                .map((c) => (
-                  <FilterChip
-                    key={c.key}
-                    label={c.label}
-                    icon={c.icon}
-                    dot={c.color}
-                    color={c.color}
-                    active={c.active}
-                    pinned={c.pinned}
-                    onPress={c.onPress}
-                    onLongPress={() => togglePin('STATUS', c.key)}
-                  />
-                ))}
-              {customStatuses
-                .filter((t) => !pinnedOnly || pinnedStatuses.includes(t.id))
-                .map((t) => (
-                  <FilterChip
-                    key={t.id}
-                    label={t.name}
-                    icon={(t.icon in Ionicons.glyphMap ? t.icon : 'bookmark-outline') as IconName}
-                    dot={t.color}
-                    color={t.color}
-                    active={statusFilter === t.id}
-                    pinned={pinnedStatuses.includes(t.id)}
-                    onPress={() => setStatusFilter(t.id)}
-                    onLongPress={() => togglePin('STATUS', t.id)}
-                  />
-                ))}
+              {visibleStatusChips.map((c, i) => (
+                <FilterChip
+                  key={c.key}
+                  label={c.label}
+                  icon={c.icon}
+                  color={c.color}
+                  active={c.active}
+                  pinned={c.pinned}
+                  cellW={cellWidthAt(1 + i)}
+                  onPress={c.onPress}
+                  onLongPress={() => togglePin('STATUS', c.key)}
+                />
+              ))}
+              {visibleCustomStatuses.map((t, j) => (
+                <FilterChip
+                  key={t.id}
+                  label={t.name}
+                  icon={(t.icon in Ionicons.glyphMap ? t.icon : 'bookmark-outline') as IconName}
+                  color={t.color}
+                  active={statusFilter === t.id}
+                  pinned={pinnedStatuses.includes(t.id)}
+                  cellW={cellWidthAt(1 + visibleStatusChips.length + j)}
+                  onPress={() => setStatusFilter(t.id)}
+                  onLongPress={() => togglePin('STATUS', t.id)}
+                />
+              ))}
               {(!pinnedOnly || pinnedStatuses.includes('EXPIRING')) && (
                 <FilterChip
                   label={t('filter.expiring')}
                   icon="alarm-outline"
-                  dot={Colors.coral}
                   color={Colors.coral}
                   active={statusFilter === 'EXPIRING'}
                   pinned={pinnedStatuses.includes('EXPIRING')}
+                  cellW={cellWidthAt(1 + visibleStatusChips.length + visibleCustomStatuses.length)}
                   onPress={() => setStatusFilter('EXPIRING')}
                   onLongPress={() => togglePin('STATUS', 'EXPIRING')}
                 />
@@ -714,15 +909,19 @@ export default function HomeScreen() {
           )}
         </View>
 
-        <SectionTitle
-          title={t('home.yourItems')}
-          color={Colors.primary}
-          right={(
-            <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.subtext }}>
-              {t('home.itemsCount', { n: items.length })}
-            </Text>
-          )}
-        />
+        {/* Bọc onLayout để đo Y của đầu mục danh sách trong header —
+            thanh dọc THU GỌN cuộn trang về đúng vị trí này. */}
+        <View onLayout={(e) => { itemsSectionYRef.current = e.nativeEvent.layout.y; }}>
+          <SectionTitle
+            title={t('home.yourItems')}
+            color={Colors.primary}
+            right={(
+              <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.subtext }}>
+                {t('home.itemsCount', { n: items.length })}
+              </Text>
+            )}
+          />
+        </View>
       </View>
       );
     },
@@ -731,6 +930,7 @@ export default function HomeScreen() {
       lentCount, query, totalActive, catCounts,
       catFilter, statusFilter, customCategories, customStatuses,
       pinnedCats, pinnedStatuses, pinnedOnly, togglePin, setPinnedOnly, t, items,
+      avatarUri, cellWidthAt,
     ],
   );
 
@@ -752,7 +952,7 @@ export default function HomeScreen() {
           {/* Banner chân trang tím đậm — cùng ngôn ngữ trang trí với hero */}
           <View
             style={{
-              backgroundColor: Colors.deep, borderRadius: 24, padding: 20, overflow: 'hidden', marginTop: 8,
+              backgroundColor: Colors.deep, borderRadius: 24, paddingVertical: 20, paddingHorizontal: 16, overflow: 'hidden', marginTop: 8,
               shadowColor: Colors.deep, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 18, elevation: 7,
             }}
           >
@@ -776,26 +976,47 @@ export default function HomeScreen() {
               </Text>
             </View>
 
+            {/* Cặp nút chân trang dựng THỦ CÔNG đồng bộ, cân lại theo ảnh
+                máy thật (bản chia flex 1:1 ở 16px bị 'g' của 'Lên đầu trang'
+                sát viền phải): ngân sách chữ mỗi nút khi đó chỉ 137 − 24
+                padding − 20 icon − 6 gap = 87dp, trong khi nhãn phải trên
+                máy thật rộng ~125dp ở 16px (font máy rộng hơn ước lượng
+                theo Roboto ~107dp). 16px KHÔNG thể vừa an toàn ở 360dp:
+                tổng chữ cần ~203dp > ngân sách tối đa sau khi đã nới banner
+                (292 − 10 gap − 2×40 chrome = 202dp) và không còn biên an
+                toàn. Nay: banner padding ngang 20→16 (khổ trong 292), flex
+                bất đối xứng theo độ dài nhãn 0,72:1, chrome mỗi nút gọn còn
+                40 (padding 9×2 + icon 18 + gap 4), chữ 15/700 lh21 ĐỒNG BỘ:
+                nút trái 282×0,72/1,72 ≈ 118 → chữ được 78 ≥ ~73 cần; nút
+                phải ≈ 164 → chữ được 124 ≥ ~117 cần (bề ngang chữ ở 15px
+                suy từ số đo máy thật ở 16px ×15/16); khoảng thở mỗi bên =
+                padding 9 ≥ 8dp. adjustsFontSizeToFit sàn 0,92 chỉ là lưới
+                an toàn, không kỳ vọng kích hoạt. */}
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-              <AppButton
-                title={t('home.footerAdd')}
-                icon="add"
+              <TouchableOpacity
                 onPress={() => router.push('/(tabs)/quick-add')}
-                style={{ flex: 1, backgroundColor: Colors.coral, shadowColor: Colors.coral }}
-              />
-              {/* Nút ghost trên nền tối: dựng theo đúng kích thước AppButton vì
-                  variant ghost của AppButton cố định màu chữ subtext (không hợp nền tím) */}
+                activeOpacity={0.85}
+                style={{
+                  flex: 0.72, height: 52, borderRadius: 16, paddingHorizontal: 9,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+                  backgroundColor: Colors.coral,
+                  shadowColor: Colors.coral, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.28, shadowRadius: 12, elevation: 5,
+                }}
+              >
+                <Ionicons name="add" size={18} color="#fff" />
+                <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.92} style={{ fontSize: 15, fontWeight: '700', lineHeight: 21, flexShrink: 1, color: '#fff' }}>{t('home.footerAdd')}</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
                 activeOpacity={0.85}
                 style={{
-                  height: 52, borderRadius: 16, paddingHorizontal: 18,
-                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  flex: 1, height: 52, borderRadius: 16, paddingHorizontal: 9,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
                   borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.35)',
                 }}
               >
-                <Ionicons name="arrow-up" size={20} color="#fff" />
-                <Text style={{ fontSize: 16, fontWeight: '700', lineHeight: 22, color: '#fff' }}>{t('home.footerTop')}</Text>
+                <Ionicons name="arrow-up" size={18} color="#fff" />
+                <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.92} style={{ fontSize: 15, fontWeight: '700', lineHeight: 21, flexShrink: 1, color: '#fff' }}>{t('home.footerTop')}</Text>
               </TouchableOpacity>
             </View>
 
@@ -847,6 +1068,35 @@ export default function HomeScreen() {
           )
         }
       />
+      {/* Thanh dọc THU GỌN (Mẫu B): capsule nổi sát mép phải, neo khoảng
+          giữa vùng danh sách (top 38% — đủ cao để khi cuộn tới đáy không
+          đè banner chân trang chứa cặp nút Thêm mới/Lên đầu trang ở cuối
+          nội dung). Hàng đồ không có nút bấm riêng ở mép phải (cả thẻ là
+          một TouchableOpacity, chevron chỉ là icon trang trí) nên thanh
+          chỉ phủ một dải hẹp ~22dp ở mép thẻ, đúng như mẫu đã duyệt.
+          Chữ chạy dọc từng ký tự đứng thẳng ('THU GỌN' / 'SHOWLESS') —
+          RN không có writing-mode nên xếp ký tự theo cột bằng '\n'. */}
+      {showCollapseRail && (
+        <TouchableOpacity
+          onPress={handleCollapseItems}
+          activeOpacity={0.85}
+          accessibilityLabel={t('home.showLess')}
+          style={{
+            position: 'absolute', right: 0, top: '38%', zIndex: 10,
+            backgroundColor: Colors.primary,
+            borderTopLeftRadius: 13, borderBottomLeftRadius: 13,
+            paddingVertical: 12, paddingLeft: 7, paddingRight: 6,
+            alignItems: 'center', gap: 6,
+            shadowColor: Colors.primary, shadowOffset: { width: -3, height: 4 },
+            shadowOpacity: 0.35, shadowRadius: 10, elevation: 8,
+          }}
+        >
+          <Ionicons name="chevron-up" size={13} color="#fff" />
+          <Text style={{ fontSize: 10.5, fontWeight: '800', lineHeight: 14, letterSpacing: 1, color: '#fff', textAlign: 'center' }}>
+            {collapseRailLabel}
+          </Text>
+        </TouchableOpacity>
+      )}
       <BarcodeScannerModal
         visible={showScanner}
         onClose={() => setShowScanner(false)}
@@ -857,6 +1107,19 @@ export default function HomeScreen() {
         kind="CATEGORY"
         onClose={() => setShowAddCat(false)}
         onAdded={(term) => setCatFilter(term.id)}
+      />
+      {/* Popup đổi avatar từ hero: chụp / thư viện (+ xoá khi đang có avatar) */}
+      <AppPopup
+        visible={avatarMenu}
+        title={t('home.avatarTitle')}
+        options={[
+          { label: t('home.avatarTake'), icon: 'camera-outline', onPress: () => { handleAvatarPick('camera').catch(() => {}); } },
+          { label: t('home.avatarLibrary'), icon: 'images-outline', onPress: () => { handleAvatarPick('library').catch(() => {}); } },
+          ...(avatarUri
+            ? [{ label: t('home.avatarRemove'), icon: 'trash-outline', color: Colors.danger, onPress: () => { handleAvatarRemove().catch(() => {}); } } as AppPopupOption]
+            : []),
+        ]}
+        onClose={() => setAvatarMenu(false)}
       />
     </View>
   );

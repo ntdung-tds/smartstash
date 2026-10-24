@@ -323,14 +323,14 @@ export default function LocationDetailScreen() {
               <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
                 <TouchableOpacity style={[styles.button, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handleDirections} disabled={fetchingCoords}>
                   <Ionicons name="navigate-outline" size={16} color="#fff" />
-                  <Text style={[styles.buttonText, { fontSize: 13 }]}>{t('loc.coordsDirections')}</Text>
+                  <Text style={[styles.buttonText, { fontSize: 13.5 }]}>{t('loc.coordsDirections')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.buttonSecondary, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handlePinCurrent} disabled={fetchingCoords}>
                   <Ionicons name="locate-outline" size={16} color={Colors.primaryDark} />
-                  <Text style={[styles.buttonSecondaryText, { fontSize: 13 }]}>{fetchingCoords ? t('loc.coordsGetting') : t('loc.coordsUpdate')}</Text>
+                  <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{fetchingCoords ? t('loc.coordsGetting') : t('loc.coordsUpdate')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.buttonDanger, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handleClearCoords} disabled={fetchingCoords}>
-                  <Text style={[styles.buttonDangerText, { fontSize: 13 }]}>{t('loc.coordsClear')}</Text>
+                  <Text style={[styles.buttonDangerText, { fontSize: 13.5 }]}>{t('loc.coordsClear')}</Text>
                 </TouchableOpacity>
               </View>
             </>
@@ -371,24 +371,24 @@ export default function LocationDetailScreen() {
         {depth < 3 && (
           <TouchableOpacity style={[styles.button, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={() => { setText(''); setChildIcon(null); setShowAddChild(true); }}>
             <Ionicons name="add" size={16} color="#fff" />
-            <Text style={[styles.buttonText, { fontSize: 13 }]}>{t('ld.addChild')}</Text>
+            <Text style={[styles.buttonText, { fontSize: 13.5 }]}>{t('ld.addChild')}</Text>
           </TouchableOpacity>
         )}
         <TouchableOpacity style={[styles.buttonSecondary, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={() => { setText(loc.name); setRenameIcon(loc.icon as IconName | null); setShowRename(true); }}>
-          <Text style={[styles.buttonSecondaryText, { fontSize: 13 }]}>{t('ld.rename')}</Text>
+          <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('ld.rename')}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.buttonSecondary, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={() => setShowMove(true)}>
-          <Text style={[styles.buttonSecondaryText, { fontSize: 13 }]}>{t('ld.move')}</Text>
+          <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('ld.move')}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.buttonSecondary, { paddingVertical: 10, paddingHorizontal: 14 }]}
           onPress={() => router.push({ pathname: '/labels', params: { loc: loc.id } })}
         >
           <Ionicons name="qr-code-outline" size={16} color={Colors.primaryDark} />
-          <Text style={[styles.buttonSecondaryText, { fontSize: 13 }]}>{t('detail.printLabel')}</Text>
+          <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('detail.printLabel')}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.buttonDanger, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handleDelete}>
-          <Text style={[styles.buttonDangerText, { fontSize: 13 }]}>{t('ld.delete')}</Text>
+          <Text style={[styles.buttonDangerText, { fontSize: 13.5 }]}>{t('ld.delete')}</Text>
         </TouchableOpacity>
       </View>
 

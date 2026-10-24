@@ -193,3 +193,12 @@ export function isAlertSnoozed(snoozedUntil: string | null | undefined): boolean
   const d = daysUntil(snoozedUntil);
   return d != null && d >= 0;
 }
+
+/**
+ * Mốc hoãn "vĩnh viễn" cho lựa chọn "Không nhắc lại nữa": ghi đè
+ * alert_snoozed_until = ngày cực xa này thì isAlertSnoozed() luôn true,
+ * nên MỌI nơi đọc hoãn (Trang chủ, chi tiết đồ, tab Cho mượn và cả
+ * rescheduleAllReminders) đều tự tắt cảnh báo đó — dùng lại nguyên cơ chế
+ * snooze sẵn có, không cần cờ/schema riêng.
+ */
+export const ALERT_SNOOZE_FOREVER_ISO = '9999-12-31';

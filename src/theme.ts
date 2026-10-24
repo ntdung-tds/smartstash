@@ -87,6 +87,21 @@ export function tint(color: string, alpha = '1C'): string {
   return `${color}${alpha}`;
 }
 
+/**
+ * Sậm hoá màu hex #RRGGBB bằng cách trộn về phía đen (amount 0–1, mặc
+ * định 0.35): dùng cho CHỮ trên nền tint của chính màu đó — đảm bảo mọi
+ * màu trạng thái (kể cả màu sáng như vàng #F5B301, xanh trời #38A8E8)
+ * đều cho chữ đọc rõ trên nền tint nhạt, theo MỘT cách nhất quán toàn
+ * app. Màu không phải hex 6 ký tự thì trả nguyên.
+ */
+export function darken(color: string, amount = 0.35): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(color.trim());
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v * (1 - amount)))).toString(16).padStart(2, '0');
+  return `#${ch((n >> 16) & 255)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+}
+
 export const CATEGORY_COLORS: Record<ItemCategory, string> = {
   ELECTRONICS: Colors.sky,
   MEDICINE: Colors.red,
@@ -185,6 +200,7 @@ export const STATUS_COLORS: Record<ItemStatus, string> = {
   DISPOSED: Colors.subtext,
   LOST: Colors.red,
   USED_UP: '#0D9488',
+  EXPIRED: '#4D7C0F',
 };
 
 export const STATUS_ICONS: Record<ItemStatus, IconName> = {
@@ -200,6 +216,7 @@ export const STATUS_ICONS: Record<ItemStatus, IconName> = {
   DISPOSED: 'trash-outline',
   LOST: 'search-outline',
   USED_UP: 'battery-dead-outline',
+  EXPIRED: 'hourglass-outline',
 };
 
 export function statusColorFor(status: string): string {
@@ -238,7 +255,7 @@ export type StatusGroupKey = 'grp:lent' | 'grp:end';
 
 export const STATUS_GROUPS: Record<StatusGroupKey, { members: ItemStatus[]; icon: IconName; color: string }> = {
   'grp:lent': { members: ['LENT', 'PARTIALLY_LENT'], icon: STATUS_ICONS.LENT, color: STATUS_COLORS.LENT },
-  'grp:end': { members: ['SOLD', 'GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP'], icon: 'flag-outline', color: '#5B54A6' },
+  'grp:end': { members: ['SOLD', 'GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP', 'EXPIRED'], icon: 'flag-outline', color: '#5B54A6' },
 };
 
 export function isStatusGroupKey(key: string): key is StatusGroupKey {

@@ -8,6 +8,7 @@ import { seedIfEmpty } from '@/db/seed';
 import { useAppStore } from '@/store/useAppStore';
 import { ensureNotificationSetup, rescheduleAllReminders } from '@/services/notificationService';
 import { loadPlan } from '@/services/planService';
+import { loadRemoteConfig } from '@/services/remoteConfigService';
 import { runAutoDriveBackupIfDue } from '@/services/driveService';
 import { getLockConfig, hasPin } from '@/services/appLockService';
 import { AppLockScreen } from '@/components/AppLockScreen';
@@ -35,6 +36,9 @@ export default function RootLayout() {
         await useAppStore.getState().loadTaxonomy();
         await useAppStore.getState().loadLanguage();
         await loadPlan();
+        // Cấu hình từ xa (công tắc vận hành): lỗi thì dùng mặc định trong
+        // code, không bao giờ chặn khởi động app
+        await loadRemoteConfig().catch(() => {});
         const flag = await kvGet('onboarded');
         useAppStore.getState().setOnboarded(flag === '1');
         // Mở app lạnh: khoá ngay nếu đã bật khoá + đã đặt PIN + đã qua onboarding

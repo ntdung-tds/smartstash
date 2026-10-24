@@ -25,6 +25,48 @@ export interface PickedPhoto {
   height: number;
 }
 
+/**
+ * Lưu ảnh avatar người dùng (Trang chủ): cắt VUÔNG ở giữa, thu về tối đa
+ * 512px, JPEG vào thư mục ảnh của app với tên kèm mốc thời gian (tên mới
+ * mỗi lần đổi để Image không dính cache theo URI cũ). Trả URI bền trong
+ * app — nơi gọi tự lưu vào app_kv ('avatar_uri') và xoá file cũ bằng
+ * removeAvatarImage. Avatar KHÔNG đăng ký vào media_files (không thuộc
+ * món/vị trí nào).
+ */
+export async function saveAvatarImage(photo: PickedPhoto): Promise<string> {
+  await ensureDirs();
+  const side = Math.min(photo.width, photo.height);
+  const actions: ImageManipulator.Action[] = [];
+  if (side > 0 && (photo.width !== photo.height)) {
+    actions.push({
+      crop: {
+        originX: Math.max(0, Math.round((photo.width - side) / 2)),
+        originY: Math.max(0, Math.round((photo.height - side) / 2)),
+        width: side,
+        height: side,
+      },
+    });
+  }
+  if (side > 512) actions.push({ resize: { width: 512 } });
+  const out = await ImageManipulator.manipulateAsync(photo.uri, actions, {
+    compress: 0.8,
+    format: ImageManipulator.SaveFormat.JPEG,
+  });
+  const destUri = `${IMAGES_DIR}avatar-${Date.now()}.jpg`;
+  await FileSystem.copyAsync({ from: out.uri, to: destUri });
+  return destUri;
+}
+
+/** Xoá file avatar cũ trong thư mục ảnh của app (best-effort, chỉ xoá file avatar-*) */
+export async function removeAvatarImage(uri: string): Promise<void> {
+  try {
+    if (!uri.startsWith(IMAGES_DIR) || !uri.includes('avatar-')) return;
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // dọn dẹp là best-effort
+  }
+}
+
 export async function takePhoto(): Promise<PickedPhoto | null> {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
   if (!perm.granted) return null;

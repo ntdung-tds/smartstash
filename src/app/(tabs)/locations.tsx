@@ -8,16 +8,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { styles, Colors, AppButton, IconTile, IconPickerGrid, AppPopup, PhotoGallery, TAB_BAR_CLEARANCE, type IconName } from '@/components/ui';
 import { LOCATION_TYPE_COLORS, locationIconName, locationTypeLabel, tint } from '@/theme';
 import { useT } from '@/i18n';
-import type { Location, LocationType } from '@/types';
+import type { Location } from '@/types';
+import { LOCATION_TYPE_BY_DEPTH as TYPE_BY_DEPTH } from '@/types';
 import { listLocations, createLocation, itemsInLocation, countLocations, reorderLocations } from '@/db/queries';
 import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
 import { uuid } from '@/utils';
 import { useAppStore } from '@/store/useAppStore';
 import { getCurrentLimits } from '@/services/planService';
 
-const TYPE_BY_DEPTH: LocationType[] = ['PROPERTY', 'ROOM', 'FURNITURE', 'CONTAINER'];
-
-// Chiều cao hàng cố định (IconTile 48 + padding dọc 13×2) + khoảng cách giữa các hàng.
+// Chiều cao hàng cố định (IconTile 44 + padding dọc 15×2) + khoảng cách giữa các hàng.
 // Kéo thả tính toán theo các hằng số này nên hàng KHÔNG được cao hơn/kém — tên dài bị cắt 1 dòng.
 const ROW_H = 74;
 const ROW_SEP = 10;
@@ -48,6 +47,18 @@ export default function LocationsScreen() {
   // mới đăng ký media (owner 'LOCATION', kind 'LOCATION_SCENE') theo id
   // vừa tạo. Key ổn định để gallery xoá đúng tấm.
   const [pendingScenePhotos, setPendingScenePhotos] = useState<{ key: string; picked: PickedPhoto }[]>([]);
+  // Key ảnh hiện trường vừa thêm trong modal → focusKey cho gallery để
+  // khung lớn nhảy tới ngay ảnh mới (như quick-add)
+  const [pendingFocusKey, setPendingFocusKey] = useState<string | undefined>(undefined);
+  // Ô Tên của modal tạo vị trí: TỰ FOCUS mỗi khi modal mở (effect theo
+  // trạng thái mở — autoFocus một mình chỉ chạy ở lần mount đầu vì form
+  // nằm cố định trong cây của màn, không remount theo lần mở)
+  const newNameInputRef = useRef<React.ElementRef<typeof TextInput>>(null);
+  useEffect(() => {
+    if (modalParent === undefined) return;
+    const timer = setTimeout(() => newNameInputRef.current?.focus(), 150);
+    return () => clearTimeout(timer);
+  }, [modalParent]);
   const refreshTick = useAppStore((s) => s.refreshTick);
   const bump = useAppStore((s) => s.bump);
 
@@ -338,7 +349,9 @@ export default function LocationsScreen() {
     }
     const picked = await takePhoto();
     if (!picked) return;
-    setPendingScenePhotos((prev) => [...prev, { key: uuid(), picked }]);
+    const entry = { key: uuid(), picked };
+    setPendingScenePhotos((prev) => [...prev, entry]);
+    setPendingFocusKey(entry.key);
   }
 
   async function addLocSceneFromLibrary() {
@@ -353,10 +366,9 @@ export default function LocationsScreen() {
     if (picked.length > remaining) {
       showInfo(t('loc.limitTitle'), t('photos.sceneLimitMsg', { n: scenePhotoLimit }));
     }
-    setPendingScenePhotos((prev) => [
-      ...prev,
-      ...picked.slice(0, remaining).map((p) => ({ key: uuid(), picked: p })),
-    ]);
+    const accepted = picked.slice(0, remaining).map((p) => ({ key: uuid(), picked: p }));
+    setPendingScenePhotos((prev) => [...prev, ...accepted]);
+    if (accepted.length > 0) setPendingFocusKey(accepted[0].key);
   }
 
   function removePendingScenePhoto(key: string) {
@@ -484,7 +496,7 @@ export default function LocationsScreen() {
           }}
         >
           <Ionicons name="add" size={18} color="#fff" />
-          <Text style={[styles.buttonText, { fontSize: 14 }]}>{t('loc.new')}</Text>
+          <Text style={[styles.buttonText, { fontSize: 13.5 }]}>{t('loc.new')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -498,6 +510,8 @@ export default function LocationsScreen() {
         ItemSeparatorComponent={() => <View style={{ height: ROW_SEP }} />}
         renderItem={({ item: { loc, depth, hasChildren } }) => {
           const inDragBlock = dragBlockIds.has(loc.id);
+          const isNew = loc.id === newLocId;
+          const hasCoords = loc.latitude != null && loc.longitude != null;
           return (
             <View
               style={[
@@ -506,9 +520,12 @@ export default function LocationsScreen() {
                   // Thụt lề bằng paddingLeft (không marginLeft) để thẻ trải hết
                   // bề ngang: các vạch dẫn cây vẽ trong vùng thụt lề mới liền
                   // mạch được. Chiều cao hàng không đổi → toán kéo thả (STRIDE)
-                  // không bị ảnh hưởng.
+                  // không bị ảnh hưởng. Thụt 12px/cấp + icon 44 + bỏ bong bóng
+                  // đếm bên phải (số món chuyển xuống dòng phụ) để TÊN là thành
+                  // phần chính: màn 360dp, cấp sâu nhất (3) còn ~194px cho tên,
+                  // cấp 2 có con là chật nhất cũng còn ~154px (trước đây ~38px).
                   height: ROW_H, flexDirection: 'row', alignItems: 'center', gap: 8,
-                  paddingVertical: 13, paddingRight: 13, paddingLeft: 13 + depth * 14,
+                  paddingVertical: 15, paddingRight: 12, paddingLeft: 12 + depth * 12,
                 },
                 loc.id === newLocId && { backgroundColor: tint(Colors.primary, '16'), borderColor: Colors.primary },
                 inDragBlock && {
@@ -524,36 +541,43 @@ export default function LocationsScreen() {
               ]}
             >
               {/* Vạch dẫn dọc theo từng cấp tổ tiên: x = tâm chevron của tổ
-                  tiên cấp a (paddingLeft 13 + a*14, ô chevron rộng 22 → tâm
-                  +11). Mỗi hàng tự vẽ đoạn của mình nên khi cuộn dài vẫn đọc
-                  được cấu trúc lồng nhau. */}
+                  tiên cấp a (paddingLeft 12 + a*12, ô chevron rộng 20 → tâm
+                  +10 → 22 + a*12). Mỗi hàng tự vẽ đoạn của mình nên khi cuộn
+                  dài vẫn đọc được cấu trúc lồng nhau. PHÂN BIỆT MÀU có chủ
+                  đích: vạch dẫn giữ Colors.border (xám-tím rất nhạt, trung
+                  tính) còn chevron mở/đóng dùng Colors.coral tương phản rõ
+                  — trước đây chevron Colors.primary cùng tông tím với vạch
+                  dẫn nên nhìn như một khối, khó biết đâu là nút bấm. */}
               {depth > 0 && Array.from({ length: depth }, (_, a) => (
                 <View
                   key={`guide-${a}`}
                   pointerEvents="none"
-                  style={{ position: 'absolute', left: 24 + a * 14, top: 0, bottom: 0, width: 1.5, backgroundColor: Colors.border }}
+                  style={{ position: 'absolute', left: 22 + a * 12, top: 0, bottom: 0, width: 1.5, backgroundColor: Colors.border }}
                 />
               ))}
+              {/* Chevron CHỈ chiếm chỗ khi nút có con; nút lá chỉ đệm 8px
+                  để nhường bề ngang cho tên */}
+              {hasChildren ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    setExpanded((s) => {
+                      const next = new Set(s);
+                      if (next.has(loc.id)) next.delete(loc.id);
+                      else next.add(loc.id);
+                      return next;
+                    });
+                  }}
+                  disabled={dragId !== null}
+                  hitSlop={6}
+                  style={{ width: 20, alignItems: 'center' }}
+                >
+                  <Ionicons name={expanded.has(loc.id) ? 'chevron-down' : 'chevron-forward'} size={20} color={Colors.coral} />
+                </TouchableOpacity>
+              ) : (
+                <View style={{ width: 8 }} />
+              )}
               <TouchableOpacity
-                onPress={() => {
-                  if (!hasChildren) return;
-                  setExpanded((s) => {
-                    const next = new Set(s);
-                    if (next.has(loc.id)) next.delete(loc.id);
-                    else next.add(loc.id);
-                    return next;
-                  });
-                }}
-                disabled={dragId !== null}
-                hitSlop={6}
-                style={{ width: 22, alignItems: 'center' }}
-              >
-                {hasChildren && (
-                  <Ionicons name={expanded.has(loc.id) ? 'chevron-down' : 'chevron-forward'} size={20} color={Colors.primary} />
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }}
                 disabled={dragId !== null}
                 onLongPress={() => startDrag({ loc, depth, hasChildren })}
                 delayLongPress={350}
@@ -563,28 +587,22 @@ export default function LocationsScreen() {
                   router.push(`/location/${loc.id}`);
                 }}
               >
-                <IconTile icon={locationIconName(loc)} color={LOCATION_TYPE_COLORS[loc.type]} size={48} iconSize={24} />
+                <IconTile icon={locationIconName(loc)} color={LOCATION_TYPE_COLORS[loc.type]} size={44} iconSize={22} />
                 <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                    {depth > 0 && <Ionicons name="return-down-forward-outline" size={15} color={Colors.faint} />}
-                    <Text numberOfLines={1} style={{ flex: 1, fontSize: 16, fontWeight: '700', color: Colors.text }}>{loc.name}</Text>
-                    {loc.latitude != null && loc.longitude != null && (
-                      <Ionicons name="location" size={15} color={Colors.coral} />
-                    )}
+                  {/* Hàng tên CHỈ còn tên: bỏ ký hiệu '↪', ghim toạ độ và
+                      huy hiệu 'Mới' đều chuyển xuống dòng phụ */}
+                  <Text numberOfLines={1} style={{ fontSize: 16, fontWeight: '700', color: Colors.text }}>{loc.name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                    {hasCoords && <Ionicons name="location" size={12} color={Colors.coral} />}
+                    <Text numberOfLines={1} style={{ flex: 1, fontSize: 12.5, color: Colors.subtext }}>
+                      {locationTypeLabel(loc.type)} · {t('loc.countItems', { n: counts[loc.id] ?? 0 })}
+                      {isNew && (
+                        <Text style={{ color: Colors.primary, fontWeight: '800' }}> · {t('loc.newBadge')}</Text>
+                      )}
+                    </Text>
                   </View>
-                  <Text numberOfLines={1} style={{ fontSize: 12, color: Colors.subtext, marginTop: 2 }}>
-                    {locationTypeLabel(loc.type)}
-                  </Text>
                 </View>
               </TouchableOpacity>
-              <View style={{ backgroundColor: Colors.chipBg, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 }}>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.primaryDark }}>{t('loc.countItems', { n: counts[loc.id] ?? 0 })}</Text>
-              </View>
-              {loc.id === newLocId && (
-                <View style={{ backgroundColor: Colors.primary, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 }}>
-                  <Text style={{ fontSize: 11, fontWeight: '800', color: '#fff' }}>{t('loc.newBadge')}</Text>
-                </View>
-              )}
               {depth < 3 && (
                 <TouchableOpacity
                   hitSlop={8}
@@ -594,12 +612,11 @@ export default function LocationsScreen() {
                     setPendingScenePhotos([]);
                     setModalParent(loc);
                   }}
-                  style={{ backgroundColor: Colors.chipBg, borderRadius: 999, width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
+                  style={{ backgroundColor: Colors.chipBg, borderRadius: 999, width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}
                 >
-                  <Ionicons name="add" size={19} color={Colors.primary} />
+                  <Ionicons name="add" size={18} color={Colors.primary} />
                 </TouchableOpacity>
               )}
-              <Ionicons name="menu" size={18} color={Colors.faint} />
             </View>
           );
         }}
@@ -626,7 +643,7 @@ export default function LocationsScreen() {
               <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.text }}>
                 {modalParent ? t('loc.modalIn', { name: modalParent.name }) : t('loc.modalNew')}
               </Text>
-              <TextInput style={styles.input} placeholder={t('loc.namePlaceholder')} value={newName} onChangeText={setNewName} autoFocus />
+              <TextInput ref={newNameInputRef} style={styles.input} placeholder={t('loc.namePlaceholder')} value={newName} onChangeText={setNewName} autoFocus />
               <View>
                 <Text style={styles.label}>{t('locations.iconLabel')}</Text>
                 <IconPickerGrid value={newIcon} onChange={setNewIcon} showDefaultOption />
@@ -640,6 +657,7 @@ export default function LocationsScreen() {
                 title={t('photos.scene')}
                 titleColor={Colors.teal}
                 photos={pendingScenePhotos.map((p, i) => ({ key: p.key, uri: p.picked.uri, isPrimary: i === 0 }))}
+                focusKey={pendingFocusKey}
                 takeLabel={t('qa.takePhoto')}
                 pickLabel={t('photos.addScene')}
                 onTake={() => { addLocSceneFromCamera().catch(() => {}); }}

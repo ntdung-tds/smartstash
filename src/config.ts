@@ -69,3 +69,32 @@ export const DRIVE_CLIENT_IDS = {
 export function isDriveConfigured(): boolean {
   return DRIVE_CLIENT_IDS.web.trim().length > 0 || DRIVE_CLIENT_IDS.android.trim().length > 0;
 }
+
+/** Một mã trong bảng mã khuyến mãi MÔ PHỎNG (xem PROMO_CODE_SIM) */
+export interface PromoCodeSimEntry {
+  /** Quyền lợi cấp khi đổi mã thành công — hiện chỉ hỗ trợ tương đương gói Pro */
+  grant: 'PRO';
+  /** Hạn dùng (ISO 8601); quá thời điểm này redeem trả về 'expired'. Bỏ trống = không hết hạn */
+  expiresAt?: string;
+  /** Số lần tối đa mã được đổi thành công trên MỘT thiết bị (mặc định 1) */
+  maxUses?: number;
+}
+
+/**
+ * PROMO_CODE_SIM — bảng mã khuyến mãi TỰ QUẢN của chủ app, bản MÔ PHỎNG chỉ
+ * để kiểm tra luồng nhập mã trên máy trước phát hành.
+ *
+ * TODO(backend): khi có backend, BỎ bảng này — mã thật do backend của chủ app
+ * phát hành/lưu trữ, app gửi mã lên API kiểm tra và backend gọi RevenueCat
+ * (Promotional Entitlements) để cấp entitlement. App KHÔNG tự chứa danh sách
+ * mã thật và KHÔNG tự quyết định cấp quyền (xem src/services/promoService.ts).
+ *
+ * Mã dùng thử cho chủ app test trên máy:
+ * - 'WELCOME' → cấp quyền lợi tương đương Pro (qua cùng cờ giả lập planService
+ * đang đọc), đổi được 1 lần/thiết bị để test cả nhánh "đã dùng".
+ * - 'EXPIRED2025' → đã quá hạn dùng, chỉ để test nhánh "hết hạn".
+ */
+export const PROMO_CODE_SIM: Record<string, PromoCodeSimEntry> = {
+  WELCOME: { grant: 'PRO', expiresAt: '2099-12-31T23:59:59.999Z', maxUses: 1 },
+  EXPIRED2025: { grant: 'PRO', expiresAt: '2025-01-01T00:00:00.000Z', maxUses: 1 },
+};

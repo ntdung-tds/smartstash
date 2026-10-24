@@ -323,7 +323,7 @@ export async function updateItem(id: string, patch: Partial<Item>): Promise<void
  * ghi nhận nhận lại / sửa chữa về sau (recomputeItemStatusAfterLoan cũng
  * đã có guard không ghi đè DAMAGED).
  */
-const LOAN_CLOSING_STATUSES: readonly string[] = ['SOLD', 'GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP'];
+const LOAN_CLOSING_STATUSES: readonly string[] = ['SOLD', 'GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP', 'EXPIRED'];
 
 /**
  * Đóng toàn bộ record ACTIVE của món — cả lượt mượn (kind LOAN) lẫn record
@@ -375,7 +375,7 @@ export async function setItemStatus(
         'UPDATE items SET status = ?, sold_price = ?, sold_date = ?, sold_note = ?, sold_to = ?, location_id = NULL, updated_at = ?, is_dirty = 1, last_accessed_at = ? WHERE id = ?',
         [newStatus, opts.soldPrice ?? null, now.slice(0, 10), opts.note ?? null, opts.soldTo ?? null, now, now, id],
       );
-    } else if (newStatus === 'DISPOSED' || newStatus === 'LOST' || newStatus === 'GIFTED' || newStatus === 'DONATED' || newStatus === 'USED_UP') {
+    } else if (newStatus === 'DISPOSED' || newStatus === 'LOST' || newStatus === 'GIFTED' || newStatus === 'DONATED' || newStatus === 'USED_UP' || newStatus === 'EXPIRED') {
       // Mọi trạng thái kết thúc (trừ SOLD có giá bán riêng): rời khỏi vị trí,
       // ghi chú kết thúc lưu chung vào sold_note như DISPOSED/LOST trước đây
       await db.runAsync(
@@ -388,7 +388,7 @@ export async function setItemStatus(
         [newStatus, now, now, id],
       );
     }
-    await logHistory(id, newStatus === 'SOLD' ? 'SOLD' : newStatus === 'GIFTED' ? 'GIFTED' : newStatus === 'DONATED' ? 'DONATED' : newStatus === 'USED_UP' ? 'USED_UP' : newStatus === 'DISPOSED' || newStatus === 'LOST' ? 'DISPOSED' : 'STATUS_CHANGED', {
+    await logHistory(id, newStatus === 'SOLD' ? 'SOLD' : newStatus === 'GIFTED' ? 'GIFTED' : newStatus === 'DONATED' ? 'DONATED' : newStatus === 'USED_UP' ? 'USED_UP' : newStatus === 'EXPIRED' ? 'EXPIRED' : newStatus === 'DISPOSED' || newStatus === 'LOST' ? 'DISPOSED' : 'STATUS_CHANGED', {
       oldStatus: item.status,
       newStatus,
       note: opts.note ?? null,
@@ -441,7 +441,7 @@ export async function listItems(opts: { statusFilter?: string; locationIds?: str
     sql += ' AND status = ?';
     params.push(opts.statusFilter);
   } else {
-    sql += " AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP')";
+    sql += " AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP','EXPIRED')";
   }
   if (opts.locationIds && opts.locationIds.length > 0) {
     sql += ` AND location_id IN (${opts.locationIds.map(() => '?').join(',')})`;
@@ -461,7 +461,7 @@ export async function searchItems(query: string): Promise<Item[]> {
       try {
         return await db.getAllAsync<Item>(
           `SELECT i.* FROM items_fts f JOIN items i ON i.id = f.item_id
-           WHERE f.items_fts MATCH ? AND i.is_deleted = 0 AND i.status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP')
+           WHERE f.items_fts MATCH ? AND i.is_deleted = 0 AND i.status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP','EXPIRED')
            ORDER BY i.updated_at DESC`,
           [match],
         );
@@ -482,7 +482,7 @@ export async function searchItems(query: string): Promise<Item[]> {
 
 export async function countActiveItems(): Promise<number> {
   const row = await getDb().getFirstAsync<{ c: number }>(
-    "SELECT COUNT(*) as c FROM items WHERE is_deleted = 0 AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP')",
+    "SELECT COUNT(*) as c FROM items WHERE is_deleted = 0 AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP','EXPIRED')",
   );
   return row?.c ?? 0;
 }
@@ -496,7 +496,7 @@ export async function itemsInLocation(locationId: string, recursive = true): Pro
   const ids = recursive ? await getDescendantLocationIds(locationId) : [locationId];
   if (ids.length === 0) return [];
   return getDb().getAllAsync<Item>(
-    `SELECT * FROM items WHERE is_deleted = 0 AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP') AND location_id IN (${ids.map(() => '?').join(',')}) ORDER BY name`,
+    `SELECT * FROM items WHERE is_deleted = 0 AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP','EXPIRED') AND location_id IN (${ids.map(() => '?').join(',')}) ORDER BY name`,
     ids as never[],
   );
 }
@@ -640,7 +640,7 @@ export async function getAvailableQuantity(itemId: string): Promise<number> {
  * Suy trạng thái của món từ cơ cấu số lượng sau mỗi biến động mượn/trả/
  * chuyển đổi/gửi bán. Chỉ quản các trạng thái thuộc vòng đời "đang ở ngoài"
  * (STORED/IN_USE/LENT/PARTIALLY_LENT/CONSIGNED); trạng thái kết thúc
- * (SOLD/GIFTED/DONATED/DISPOSED/LOST/USED_UP), DAMAGED và trạng thái TỰ TẠO
+ * (SOLD/GIFTED/DONATED/DISPOSED/LOST/USED_UP/EXPIRED), DAMAGED và trạng thái TỰ TẠO
  * (id 'st_…', không thuộc tập trên) không bao giờ bị ghi đè.
  * Công thức: out = 0 → STORED; còn ở nhà → PARTIALLY_LENT; hết ở nhà mà
  * còn cho mượn → LENT; hết ở nhà, chỉ còn gửi bán → CONSIGNED.
@@ -755,26 +755,26 @@ export async function returnLoan(
  * báo hạn trả ở Trang chủ và lịch nhắc. Record GỬI BÁN không bao giờ lọt
  * vào đây (không có hạn trả, không nhắc đòi) — xem listActiveConsignments.
  */
-export async function listActiveLoans(): Promise<(Loan & { item_name: string; item_unit: string })[]> {
+export async function listActiveLoans(): Promise<(Loan & { item_name: string; item_unit: string; item_category: string })[]> {
   return getDb().getAllAsync(
-    `SELECT l.*, i.name as item_name, i.unit as item_unit FROM loans l JOIN items i ON i.id = l.item_id
+    `SELECT l.*, i.name as item_name, i.unit as item_unit, i.category as item_category FROM loans l JOIN items i ON i.id = l.item_id
      WHERE l.status = 'ACTIVE' AND l.kind = 'LOAN' AND l.is_deleted = 0
      ORDER BY (l.expected_return_date IS NULL), l.expected_return_date ASC`,
   );
 }
 
 /** Các record GỬI BÁN đang mở (kind CONSIGNMENT) — cho section "Đang gửi bán" ở tab Cho mượn */
-export async function listActiveConsignments(): Promise<(Loan & { item_name: string; item_unit: string })[]> {
+export async function listActiveConsignments(): Promise<(Loan & { item_name: string; item_unit: string; item_category: string })[]> {
   return getDb().getAllAsync(
-    `SELECT l.*, i.name as item_name, i.unit as item_unit FROM loans l JOIN items i ON i.id = l.item_id
+    `SELECT l.*, i.name as item_name, i.unit as item_unit, i.category as item_category FROM loans l JOIN items i ON i.id = l.item_id
      WHERE l.status = 'ACTIVE' AND l.kind = 'CONSIGNMENT' AND l.is_deleted = 0
      ORDER BY l.lent_at ASC`,
   );
 }
 
-export async function listReturnedLoans(): Promise<(Loan & { item_name: string })[]> {
+export async function listReturnedLoans(): Promise<(Loan & { item_name: string; item_category: string })[]> {
   return getDb().getAllAsync(
-    `SELECT l.*, i.name as item_name FROM loans l JOIN items i ON i.id = l.item_id
+    `SELECT l.*, i.name as item_name, i.category as item_category FROM loans l JOIN items i ON i.id = l.item_id
      WHERE l.status = 'RETURNED' AND l.kind = 'LOAN' AND l.is_deleted = 0 AND l.returned_at >= datetime('now', '-12 months')
      ORDER BY l.returned_at DESC`,
   );
@@ -798,12 +798,12 @@ export async function countActiveLoansForItem(itemId: string): Promise<number> {
 
 // ===================== SỐ LƯỢNG Ở FORM TRẠNG THÁI =====================
 /** Nhóm GIẢM KHO: áp một phần thì trừ kho, giữ nguyên trạng thái vòng đời */
-const QTY_REDUCING_STATUSES: readonly string[] = ['SOLD', 'GIFTED', 'DONATED', 'USED_UP', 'DISPOSED'];
+const QTY_REDUCING_STATUSES: readonly string[] = ['SOLD', 'GIFTED', 'DONATED', 'USED_UP', 'DISPOSED', 'EXPIRED'];
 
 /**
  * Áp một trạng thái đích lên `qty` cái ĐANG Ở NHÀ của món (qty luôn bị kẹp
  * trong 1..available; UI mặc định qty = available kèm cảnh báo riêng):
- * - GIẢM KHO (SOLD/GIFTED/DONATED/USED_UP/DISPOSED):
+ * - GIẢM KHO (SOLD/GIFTED/DONATED/USED_UP/DISPOSED/EXPIRED):
  *   qty = available và không còn gì ở ngoài → setItemStatus đầy đủ như cũ
  *   (SOLD kèm sold_to/sold_price/sold_note); ngược lại chỉ trừ kho, recompute
  *   trạng thái, lịch sử action = status với note do UI soạn (uiNote).

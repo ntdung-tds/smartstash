@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Image as ExpoImage } from 'expo-image';
 import {
   View, Text, StyleSheet, TouchableOpacity, Image, Animated, Modal, FlatList, Pressable, TextInput,
-  ActivityIndicator, ScrollView, type ViewStyle,
+  ActivityIndicator, ScrollView, useWindowDimensions, type ViewStyle,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { CustomTerm, Item, Location } from '../types';
+import type { CustomTerm, Item, Location, LocationType } from '../types';
+import { LOCATION_TYPE_BY_DEPTH } from '../types';
 import {
   formatVND, getAlertTier, isAlertSnoozed,
   parseDisplayDate, formatDisplayDate, formatDateForLang, addDaysISO, localTodayISO, maskDateInput,
@@ -14,10 +15,12 @@ import {
   Colors, Radius, cardShadow, floatingShadow, tint,
   categoryColor, categoryIcon, statusColorFor, statusIcon, statusLabel,
   alertTierColor, alertTierIcon,
-  LOCATION_TYPE_COLORS, locationIconName,
+  LOCATION_TYPE_COLORS, locationIconName, locationTypeLabel,
   type IconName,
 } from '../theme';
 import { getCachedAlertSettings } from '../services/alertSettings';
+import { createLocation, countLocations } from '../db/queries';
+import { getCurrentLimits } from '../services/planService';
 import { useAppStore } from '../store/useAppStore';
 import { translate, useT } from '../i18n';
 
@@ -60,7 +63,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8,
     shadowColor: Colors.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 5,
   },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '700', lineHeight: 22 },
+  buttonText: { color: '#fff', fontSize: 15, fontWeight: '700', lineHeight: 21 },
   buttonSecondary: {
     backgroundColor: '#fff', borderRadius: Radius.pill, paddingVertical: 12, paddingHorizontal: 16,
     borderWidth: 1.5, borderColor: Colors.border,
@@ -399,8 +402,173 @@ export function SceneImage({
   );
 }
 
+/**
+ * Form tạo vị trí DÙNG CHUNG mở từ các màn chọn vị trí (LocationPickerModal):
+ * cùng một khuôn với form tạo ở tab Vị trí — tên bắt buộc, icon tự chọn
+ * (IconPickerGrid), loại vị trí suy từ độ sâu của vị trí cha
+ * (LOCATION_TYPE_BY_DEPTH), trần số vị trí theo gói, lỗi/trần gói báo qua
+ * AppPopup và GIỮ NGUYÊN form để sửa tiếp. Khác biệt duy nhất: vị trí cha
+ * được CHỌN ngay trong form này (ở tab Vị trí, cha đến từ nút "+" của đúng
+ * hàng đó); cấp sâu nhất (Vật chứa) không nhận con nên không hiện trong
+ * danh sách cha. Tạo xong trả vị trí mới qua onCreated để nơi gọi tự chọn
+ * ngay — không rời khỏi luồng đang làm dở.
+ */
+export function CreateLocationModal({
+  visible, locations, onClose, onCreated,
+}: {
+  visible: boolean;
+  locations: Location[];
+  onClose: () => void;
+  onCreated: (loc: Location) => void;
+}) {
+  const { t } = useT();
+  const [name, setName] = useState('');
+  const [icon, setIcon] = useState<IconName | null>(null);
+  const [parentId, setParentId] = useState<string | null>(null);
+  const [parentOpen, setParentOpen] = useState(false);
+  const [info, setInfo] = useState<{ title: string; message?: string } | null>(null);
+  const [creating, setCreating] = useState(false);
+  // State làm mới mỗi lần mở nhờ nơi dùng remount bằng key (như StatusNoteModal)
+  // TỰ FOCUS ô Tên mỗi khi modal mở: autoFocus trên TextInput mới chỉ
+  // chạy ở lần mount đầu; ref + effect theo visible đảm bảo mọi lần mở
+  // (kể cả nơi dùng không remount) bàn phím đều sẵn sàng ở ô Tên
+  const nameInputRef = useRef<React.ElementRef<typeof TextInput>>(null);
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setTimeout(() => nameInputRef.current?.focus(), 150);
+    return () => clearTimeout(timer);
+  }, [visible]);
+
+  // Cây vị trí phẳng kèm độ sâu (cùng cách duyệt của LocationPickerModal)
+  const byParent = new Map<string | null, Location[]>();
+  for (const l of locations) {
+    const arr = byParent.get(l.parent_id) ?? [];
+    arr.push(l);
+    byParent.set(l.parent_id, arr);
+  }
+  const flat: { loc: Location; depth: number }[] = [];
+  const walk = (pid: string | null, depth: number) => {
+    for (const l of byParent.get(pid) ?? []) {
+      flat.push({ loc: l, depth });
+      walk(l.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  const parent = parentId ? locations.find((l) => l.id === parentId) ?? null : null;
+  const parentDepth = parent ? flat.find((f) => f.loc.id === parent.id)?.depth ?? 0 : -1;
+  const derivedType: LocationType = LOCATION_TYPE_BY_DEPTH[Math.min(3, parentDepth + 1)];
+  const parentOptions = flat.filter(({ depth }) => depth <= 2);
+
+  async function handleCreate() {
+    if (!name.trim() || creating) return;
+    setCreating(true);
+    try {
+      const total = await countLocations();
+      if (total >= getCurrentLimits().maxLocations) {
+        setInfo({ title: t('loc.limitTitle'), message: t('loc.limitLocMsg', { n: getCurrentLimits().maxLocations }) });
+        return;
+      }
+      const created = await createLocation({
+        name: name.trim(),
+        type: derivedType,
+        parent_id: parent?.id ?? null,
+        icon,
+      });
+      onCreated(created);
+    } catch (e) {
+      setInfo({ title: t('loc.createFail'), message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  const parentRow = (loc: Location | null, depth: number) => {
+    const selected = (loc?.id ?? null) === parentId;
+    return (
+      <TouchableOpacity
+        key={loc?.id ?? 'root'}
+        onPress={() => { setParentId(loc?.id ?? null); setParentOpen(false); }}
+        style={{
+          flexDirection: 'row', alignItems: 'center', gap: 10,
+          paddingVertical: 9, paddingHorizontal: 12, marginLeft: depth * 14,
+          backgroundColor: selected ? tint(Colors.primary) : 'transparent',
+        }}
+      >
+        <Ionicons
+          name={loc ? locationIconName(loc) : 'home-outline'}
+          size={18}
+          color={loc ? LOCATION_TYPE_COLORS[loc.type] : Colors.primary}
+        />
+        <Text style={{ flex: 1, fontSize: 14.5, fontWeight: selected ? '700' : '500', color: Colors.text }}>
+          {loc ? loc.name : t('loc.parentRoot')}
+        </Text>
+        {selected && <Ionicons name="checkmark" size={18} color={Colors.primary} />}
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <>
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.card, styles.modalCard, { maxHeight: '92%' }]}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.text }}>
+                {parent ? t('loc.modalIn', { name: parent.name }) : t('loc.modalNew')}
+              </Text>
+              <TextInput ref={nameInputRef} style={styles.input} placeholder={t('loc.namePlaceholder')} value={name} onChangeText={setName} autoFocus />
+              <View>
+                <Text style={styles.label}>{t('loc.parentLabel')}</Text>
+                <TouchableOpacity
+                  style={[styles.input, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}
+                  onPress={() => setParentOpen((v) => !v)}
+                >
+                  <Text style={{ fontSize: 15.5, color: parent ? Colors.text : Colors.faint }}>
+                    {parent ? parent.name : t('loc.parentRoot')}
+                  </Text>
+                  <Ionicons name={parentOpen ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.subtext} />
+                </TouchableOpacity>
+                {parentOpen && (
+                  <View style={{ marginTop: 8, borderWidth: 1.5, borderColor: '#E7E2F6', borderRadius: 14, overflow: 'hidden' }}>
+                    <ScrollView nestedScrollEnabled style={{ maxHeight: 216 }}>
+                      {parentRow(null, 0)}
+                      {parentOptions.map(({ loc, depth }) => parentRow(loc, depth))}
+                    </ScrollView>
+                  </View>
+                )}
+                <Text style={{ fontSize: 12.5, color: Colors.subtext, marginTop: 6 }}>
+                  {locationTypeLabel(derivedType)}
+                </Text>
+              </View>
+              <View>
+                <Text style={styles.label}>{t('locations.iconLabel')}</Text>
+                <IconPickerGrid value={icon} onChange={setIcon} showDefaultOption />
+              </View>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity style={[styles.buttonSecondary, { flex: 1 }]} onPress={onClose}>
+                  <Text style={styles.buttonSecondaryText}>{t('common.cancel')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, { flex: 1 }]} onPress={() => { handleCreate().catch(() => {}); }}>
+                  <Text style={styles.buttonText}>{t('common.create')}</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <AppPopup
+        visible={!!info}
+        title={info?.title ?? ''}
+        message={info?.message}
+        okLabel={t('common.gotIt')}
+        onClose={() => setInfo(null)}
+      />
+    </>
+  );
+}
+
 export function LocationPickerModal({
-  visible, locations, title, onClose, onSelect, excludeId,
+  visible, locations, title, onClose, onSelect, excludeId, allowCreate,
 }: {
   visible: boolean;
   locations: Location[];
@@ -408,7 +576,10 @@ export function LocationPickerModal({
   onClose: () => void;
   onSelect: (loc: Location) => void;
   excludeId?: string;
+  /** Hiện mục "＋ Thêm vị trí mới" ở đầu danh sách: tạo xong TỰ CHỌN vị trí mới và đóng picker */
+  allowCreate?: boolean;
 }) {
+  const [showCreate, setShowCreate] = useState(false);
   const byParent = new Map<string | null, Location[]>();
   for (const l of locations) {
     const arr = byParent.get(l.parent_id) ?? [];
@@ -426,41 +597,66 @@ export function LocationPickerModal({
   const lang = useAppStore((s) => s.lang);
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.screen, { paddingTop: 50 }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, marginBottom: 8, gap: 12 }}>
-          <View style={{ width: 5, height: 30, borderRadius: 3, backgroundColor: Colors.primary }} />
-          <Text style={[styles.title, { flex: 1, fontSize: 24 }]}>{title}</Text>
-          <TouchableOpacity
-            onPress={onClose}
-            hitSlop={10}
-            style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: Colors.chipBg, alignItems: 'center', justifyContent: 'center' }}
-          >
-            <Ionicons name="close" size={22} color={Colors.primaryDark} />
-          </TouchableOpacity>
-        </View>
-        <FlatList
-          data={flat.filter(({ loc }) => loc.id !== excludeId)}
-          keyExtractor={({ loc }) => loc.id}
-          contentContainerStyle={{ padding: 18, gap: 10 }}
-          renderItem={({ item: { loc, depth } }) => (
+    <>
+      <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+        <View style={[styles.screen, { paddingTop: 50 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, marginBottom: 8, gap: 12 }}>
+            <View style={{ width: 5, height: 30, borderRadius: 3, backgroundColor: Colors.primary }} />
+            <Text style={[styles.title, { flex: 1, fontSize: 24 }]}>{title}</Text>
             <TouchableOpacity
-              style={[styles.card, { marginLeft: depth * 16, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 }]}
-              onPress={() => { onSelect(loc); onClose(); }}
+              onPress={onClose}
+              hitSlop={10}
+              style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: Colors.chipBg, alignItems: 'center', justifyContent: 'center' }}
             >
-              <IconTile
-                icon={locationIconName(loc)}
-                color={LOCATION_TYPE_COLORS[loc.type]}
-                size={44}
-                iconSize={22}
-              />
-              <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{loc.name}</Text>
+              <Ionicons name="close" size={22} color={Colors.primaryDark} />
             </TouchableOpacity>
-          )}
-          ListEmptyComponent={<Text style={styles.empty}>{translate(lang, 'ui.noLocations')}</Text>}
+          </View>
+          <FlatList
+            data={flat.filter(({ loc }) => loc.id !== excludeId)}
+            keyExtractor={({ loc }) => loc.id}
+            contentContainerStyle={{ padding: 18, gap: 10 }}
+            ListHeaderComponent={allowCreate ? (
+              <TouchableOpacity
+                onPress={() => setShowCreate(true)}
+                activeOpacity={0.85}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
+                  backgroundColor: tint(Colors.primary), borderRadius: 16, paddingVertical: 14,
+                }}
+              >
+                <Ionicons name="add-circle-outline" size={21} color={Colors.primary} />
+                <Text style={{ fontSize: 15.5, fontWeight: '700', color: Colors.primary }}>{translate(lang, 'loc.addNew')}</Text>
+              </TouchableOpacity>
+            ) : undefined}
+            renderItem={({ item: { loc, depth } }) => (
+              <TouchableOpacity
+                style={[styles.card, { marginLeft: depth * 16, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 }]}
+                onPress={() => { onSelect(loc); onClose(); }}
+              >
+                <IconTile
+                  icon={locationIconName(loc)}
+                  color={LOCATION_TYPE_COLORS[loc.type]}
+                  size={44}
+                  iconSize={22}
+                />
+                <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{loc.name}</Text>
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={<Text style={styles.empty}>{translate(lang, 'ui.noLocations')}</Text>}
+          />
+        </View>
+      </Modal>
+      {allowCreate && (
+        <CreateLocationModal
+          key={showCreate ? 'create-open' : 'create-closed'}
+          visible={showCreate}
+          locations={locations}
+          onClose={() => setShowCreate(false)}
+          onCreated={(loc) => { setShowCreate(false); onSelect(loc); onClose(); }}
         />
-      </View>
-    </Modal>
+      )}
+    </>
   );
 }
 
@@ -477,6 +673,9 @@ export type AppButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
  * Nút chuẩn toàn app: cao 52, radius 16, icon + chữ luôn căn giữa tuyệt đối
  * (flexDirection row, alignItems/justifyContent center, gap 8, lineHeight rõ ràng).
  * `loading` là props mở rộng: hiện vòng xoay thay cho icon + chữ khi đang xử lý.
+ * THANG CHỮ NÚT TOÀN APP (neo theo component này): nút chính/phụ 15px/700;
+ * nút nhỏ/gọn 13.5px; chip/pill lọc ≥ 12px — cùng một vai trò thì cùng một
+ * cỡ ở mọi màn, không tự chế cỡ riêng.
  */
 export function AppButton({
   title, onPress, icon, variant = 'primary', disabled, loading, style,
@@ -526,7 +725,7 @@ export function AppButton({
             numberOfLines={1}
             adjustsFontSizeToFit
             minimumFontScale={0.75}
-            style={{ color, fontSize: 16, fontWeight: '700', lineHeight: 22, flexShrink: 1 }}
+            style={{ color, fontSize: 15, fontWeight: '700', lineHeight: 21, flexShrink: 1 }}
           >
             {title}
           </Text>
@@ -560,53 +759,32 @@ export function Field({
  * Ô nhập số lượng của form thêm/sửa đồ vật. Số lượng là trường BẮT BUỘC
  * nên component này KHÁC QtyStepper của các luồng mượn (cái đó luôn kẹp
  * 1..max, không có trạng thái trống): ở đây giá trị là chuỗi thô do form
- * giữ, '' = chưa nhập (không mặc định 1 im lặng), có nút − / + hai bên
- * (ô đang trống bấm + → 1, bấm − khi ≤ 1 thì khóa) và tự lọc chỉ giữ chữ
- * số khi gõ. Việc chặn lưu + báo lỗi khi trống/0 là của form gọi: form
- * truyền invalid để viền ô đỏ và tự render dòng lỗi cạnh trường.
+ * giữ, '' = chưa nhập (không mặc định 1 im lặng), CHỈ một ô nhập số trực
+ * tiếp (bàn phím số, tự lọc chỉ giữ chữ số khi gõ — không còn nút − / +
+ * hai bên theo phản hồi người dùng). Việc chặn lưu + báo lỗi khi trống/0
+ * là của form gọi: form truyền invalid để viền ô đỏ và tự render dòng lỗi
+ * cạnh trường.
  */
 export function QtyInput({
-  value, onChangeText, placeholder, invalid,
+  value, onChangeText, placeholder, invalid, inputRef,
 }: {
   value: string;
   onChangeText: (v: string) => void;
   placeholder?: string;
   invalid?: boolean;
+  /** Ref tới ô nhập bên trong — form dùng để TỰ FOCUS khi validate lỗi tại trường này */
+  inputRef?: React.Ref<React.ElementRef<typeof TextInput>>;
 }) {
-  const n = parseInt(value, 10);
-  const hasValue = !isNaN(n);
-  const step = (delta: number) => {
-    const base = hasValue ? n : 0;
-    onChangeText(String(Math.max(1, base + delta)));
-  };
-  const stepBtn = (icon: IconName, delta: number, disabled: boolean) => (
-    <TouchableOpacity
-      onPress={() => step(delta)}
-      disabled={disabled}
-      activeOpacity={0.8}
-      style={{
-        width: 42, height: 52, borderRadius: 14,
-        backgroundColor: disabled ? Colors.chipBg : tint(Colors.primary),
-        alignItems: 'center', justifyContent: 'center',
-        opacity: disabled ? 0.55 : 1,
-      }}
-    >
-      <Ionicons name={icon} size={19} color={disabled ? Colors.faint : Colors.primary} />
-    </TouchableOpacity>
-  );
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-      {stepBtn('remove-outline', -1, !hasValue || n <= 1)}
-      <TextInput
-        style={[styles.input, { flex: 1, textAlign: 'center' }, invalid ? { borderColor: Colors.danger } : null]}
-        keyboardType="number-pad"
-        value={value}
-        onChangeText={(v) => onChangeText(v.replace(/\D/g, '').slice(0, 6))}
-        placeholder={placeholder}
-        placeholderTextColor={Colors.faint}
-      />
-      {stepBtn('add-outline', 1, false)}
-    </View>
+    <TextInput
+      ref={inputRef}
+      style={[styles.input, { textAlign: 'center' }, invalid ? { borderColor: Colors.danger } : null]}
+      keyboardType="number-pad"
+      value={value}
+      onChangeText={(v) => onChangeText(v.replace(/\D/g, '').slice(0, 6))}
+      placeholder={placeholder}
+      placeholderTextColor={Colors.faint}
+    />
   );
 }
 
@@ -803,8 +981,17 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
  *     Block rỗng vẫn render (khung trống + nút Thêm ảnh mới) để thêm
  *     được ảnh đầu tiên từ chi tiết. Call-site truyền focusKey = key của
  *     ảnh vừa thêm để gallery tự nhảy tới hiển thị ngay ảnh đó.
- *   + 'view' (chỉ xem thuần): ẩn mọi điều khiển, chạm ảnh lớn không làm
- *     gì — chỉ vuốt/bấm thumbnail để xem; block rỗng không render.
+ *   + 'view' (chỉ xem thuần): ẩn mọi điều khiển sửa/xoá — chỉ xem;
+ *     block rỗng không render.
+ * - XEM TOÀN MÀN HÌNH (mọi chế độ có khung lớn): nút PHÓNG TO kính tối
+ *   26px ở góc dưới-phải của mỗi trang pager mở Modal nền đen xem ảnh
+ *   khổ lớn (vuốt ngang qua lại trong cùng block, chỉ số n/N, nút ✕
+ *   đóng; trong viewer CHỈ xem — không nút sửa/xoá/ghim nào). Ngoài
+ *   nút đó, CHẠM vào ảnh lớn cũng mở viewer ở những bề mặt mà cú chạm
+ *   chưa gán thao tác khác (mode 'view'; ảnh đồ ở quick-add; ảnh đồ ở
+ *   trang chi tiết) — bề mặt đã có thao tác chạm (ghim ảnh hiện
+ *   trường, popup Đặt chính/Xoá ở form) GIỮ NGUYÊN thao tác đó và đi
+ *   qua nút phóng to.
  */
 export type PhotoGalleryMode = 'edit' | 'detail' | 'view';
 
@@ -821,8 +1008,8 @@ export type PhotoGalleryMode = 'edit' | 'detail' | 'view';
  */
 const PhotoPage = React.memo(function PhotoPage({
   entry, frameW, mode, pulse, pinEnabled, canDelete,
-  primaryLabel, pinnedLabel, tapToPinLabel, deleteLabel,
-  onPressPage, onDeletePress,
+  primaryLabel, pinnedLabel, tapToPinLabel, deleteLabel, expandLabel,
+  onPressPage, onDeletePress, onExpandPress,
 }: {
   entry: PhotoGalleryEntry;
   frameW: number;
@@ -834,8 +1021,10 @@ const PhotoPage = React.memo(function PhotoPage({
   pinnedLabel: string;
   tapToPinLabel: string;
   deleteLabel: string;
+  expandLabel: string;
   onPressPage: (entry: PhotoGalleryEntry, locationX: number, locationY: number) => void;
   onDeletePress: (entry: PhotoGalleryEntry) => void;
+  onExpandPress: (entry: PhotoGalleryEntry) => void;
 }) {
   return (
     <Pressable
@@ -929,6 +1118,30 @@ const PhotoPage = React.memo(function PhotoPage({
           <Ionicons name="trash-outline" size={15} color="#fff" />
         </TouchableOpacity>
       )}
+      {/* Nút PHÓNG TO mở trình xem toàn màn hình (MỌI chế độ có khung
+          lớn): tròn kính tối 26px ở góc dưới PHẢI — cùng chất liệu/cỡ
+          với cặp Mẫu B phía trên; đặc biệt cần ở các bề mặt mà CHẠM vào
+          ảnh đã gán thao tác khác (ghim ở ảnh hiện trường, popup Đặt
+          chính/Xoá ở form) nên chạm ảnh không mở xem full được. Là
+          touchable con vẽ cuối cùng (zIndex 10) như nút thùng rác:
+          riêng vùng nút nhận chạm mở viewer, không lọt sang thao tác
+          ghim/popup của cả trang */}
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => onExpandPress(entry)}
+        accessibilityLabel={expandLabel}
+        hitSlop={8}
+        style={{
+          position: 'absolute', bottom: 10, right: 10, width: 26, height: 26, borderRadius: 13,
+          backgroundColor: 'rgba(24,17,52,0.44)',
+          borderWidth: 1, borderColor: 'rgba(255,255,255,0.30)',
+          shadowColor: '#0A051E', shadowOpacity: 0.28, shadowRadius: 8,
+          shadowOffset: { width: 0, height: 2 }, elevation: 3,
+          alignItems: 'center', justifyContent: 'center', zIndex: 10,
+        }}
+      >
+        <Ionicons name="expand-outline" size={14} color="#fff" />
+      </TouchableOpacity>
     </Pressable>
   );
 });
@@ -978,6 +1191,14 @@ export function PhotoGallery({
   const [deleteFor, setDeleteFor] = useState<PhotoGalleryEntry | null>(null);
   // Popup chọn nguồn ảnh (chế độ 'detail': Chụp ảnh / Từ thư viện)
   const [showAddSource, setShowAddSource] = useState(false);
+  // Trình xem ảnh TOÀN MÀN HÌNH: viewerKey = key của ảnh được mở xem
+  // (null = đang đóng); viewerIdx = trang đang xem TRONG viewer (đi
+  // theo cú vuốt tại đó, độc lập với lựa chọn của pager chính bên ngoài)
+  const [viewerKey, setViewerKey] = useState<string | null>(null);
+  const [viewerIdx, setViewerIdx] = useState(0);
+  const [prevViewerKey, setPrevViewerKey] = useState<string | null>(null);
+  const viewerListRef = useRef<FlatList<PhotoGalleryEntry>>(null);
+  const { width: winW, height: winH } = useWindowDimensions();
   const [frameW, setFrameW] = useState(0);
   const pagerRef = useRef<FlatList<PhotoGalleryEntry>>(null);
   // Danh sách key của lần render trước — chỉ dùng bởi khối "điều chỉnh
@@ -1035,6 +1256,20 @@ export function PhotoGallery({
     if (keysChanged) setPrevKeys(curKeys);
   }
 
+  // Vừa mở trình xem (viewerKey đổi sang một key mới): trang bắt đầu
+  // của viewer = đúng vị trí của ảnh đó trong danh sách — cùng mẫu
+  // điều chỉnh state trong lúc render như focusKey ở trên (áp dụng
+  // một lần cho mỗi lần mở; các cú vuốt trong viewer tự cập nhật
+  // viewerIdx qua onMomentumScrollEnd nên không bị giật về)
+  if (viewerKey !== prevViewerKey) {
+    setPrevViewerKey(viewerKey);
+    if (viewerKey) {
+      const idx = photos.findIndex((p) => p.key === viewerKey);
+      setViewerIdx(idx >= 0 ? idx : 0);
+    }
+  }
+  const viewerSafeIdx = photos.length === 0 ? 0 : Math.min(viewerIdx, photos.length - 1);
+
   const pickedIndex = photos.findIndex((p) => p.key === selectedKey);
   const primaryIndex = photos.findIndex((p) => p.isPrimary);
   const selIndex = photos.length === 0
@@ -1076,10 +1311,18 @@ export function PhotoGallery({
   // giữa các lần render — điều kiện cần cho React.memo của PhotoPage
   // phát huy tác dụng (trang không dựng lại khi vuốt/đổi lựa chọn).
   const handlePagePress = useCallback((entry: PhotoGalleryEntry, locationX: number, locationY: number) => {
-    if (mode === 'view' || frameW === 0) return;
+    if (mode === 'view') {
+      // Chỉ-xem thuần: chạm ảnh lớn không có thao tác nào khác → mở
+      // thẳng trình xem toàn màn hình
+      setViewerKey(entry.key);
+      return;
+    }
+    if (frameW === 0) return;
     if (onPinChange && entry.pin !== undefined) {
       // Ảnh hiện trường: ghim thuộc về chính tấm vừa chạm (cả ở form lẫn
-      // trang chi tiết — chi tiết lưu ngay qua onPinChange của call-site)
+      // trang chi tiết — chi tiết lưu ngay qua onPinChange của call-site).
+      // GIỮ NGUYÊN thao tác ghim này — xem full đi qua nút phóng to
+      // riêng trên khung (xem PhotoPage)
       onPinChange(entry, {
         x: clamp01(locationX / frameW),
         y: clamp01(locationY / PHOTO_VIEWER_HEIGHT),
@@ -1087,11 +1330,22 @@ export function PhotoGallery({
       return;
     }
     // Popup "Đặt làm ảnh chính / Xoá" chỉ có ở form — chi tiết không đặt chính
-    if (mode === 'edit' && onSetPrimary) setOptionsFor(entry);
+    if (mode === 'edit' && onSetPrimary) {
+      setOptionsFor(entry);
+      return;
+    }
+    // Mọi bề mặt còn lại, chạm vào ảnh lớn chưa gán thao tác nào (ảnh
+    // đồ ở quick-add không có onSetPrimary, ảnh đồ ở trang chi tiết):
+    // chạm = mở trình xem toàn màn hình
+    setViewerKey(entry.key);
   }, [mode, frameW, onPinChange, onSetPrimary]);
 
   const handleDeletePress = useCallback((entry: PhotoGalleryEntry) => {
     setDeleteFor(entry);
+  }, []);
+
+  const handleExpandPress = useCallback((entry: PhotoGalleryEntry) => {
+    setViewerKey(entry.key);
   }, []);
 
   const renderPage = useCallback(({ item: entry }: { item: PhotoGalleryEntry }) => (
@@ -1106,10 +1360,12 @@ export function PhotoGallery({
       pinnedLabel={t('photos.pinnedBadge')}
       tapToPinLabel={t('photos.tapToPinBadge')}
       deleteLabel={t('photos.delete')}
+      expandLabel={t('photos.viewFullscreen')}
       onPressPage={handlePagePress}
       onDeletePress={handleDeletePress}
+      onExpandPress={handleExpandPress}
     />
-  ), [frameW, mode, pulse, onPinChange, onRemove, t, handlePagePress, handleDeletePress]);
+  ), [frameW, mode, pulse, onPinChange, onRemove, t, handlePagePress, handleDeletePress, handleExpandPress]);
 
   const optionRows: AppPopupOption[] = [];
   if (optionsFor) {
@@ -1137,12 +1393,22 @@ export function PhotoGallery({
   );
 
   // Nút trong HÀNG thêm ảnh cố định dưới dải thumbnail (chế độ 'edit'):
-  // 2 nút cạnh nhau, nhãn đầy đủ do call-site truyền (takeLabel/pickLabel)
+  // 2 nút cạnh nhau, nhãn đầy đủ do call-site truyền (takeLabel/pickLabel).
+  // CHỐNG TRÀN (giữ nguyên bộ khoá này khi sửa): nút flex:1 + minWidth:0 +
+  // paddingHorizontal; nhãn flexShrink:1 + minWidth:0 + căn giữa + tối đa
+  // 2 dòng + co chữ có kiểm soát (adjustsFontSizeToFit ở JSX). Thiếu các
+  // khoá đó, Yoga giữ bề ngang nguyên bản 1 dòng của Text — nhóm icon+chữ
+  // rộng hơn khung nút và justifyContent 'center' đẩy tràn đều 2 phía:
+  // icon lòi khỏi mép trái, chữ tràn qua mép phải đè lên nút bên cạnh.
   const addRowBtnStyle = {
-    flex: 1, borderWidth: 1.5, borderStyle: 'dashed' as const, borderColor: Colors.primary,
+    flex: 1, minWidth: 0, borderWidth: 1.5, borderStyle: 'dashed' as const, borderColor: Colors.primary,
     backgroundColor: tint(Colors.primary, '10'), borderRadius: 16,
-    paddingVertical: 12, flexDirection: 'row' as const,
-    alignItems: 'center' as const, justifyContent: 'center' as const, gap: 7,
+    paddingVertical: 12, paddingHorizontal: 10, flexDirection: 'row' as const,
+    alignItems: 'center' as const, justifyContent: 'center' as const, gap: 6,
+  };
+  const addRowLabelStyle = {
+    fontSize: 14.5, fontWeight: '700' as const, color: Colors.primary,
+    flexShrink: 1, minWidth: 0, textAlign: 'center' as const,
   };
 
   // Nút "Thêm ảnh mới" (chế độ 'detail'): mở popup chọn nguồn ảnh
@@ -1152,12 +1418,19 @@ export function PhotoGallery({
       onPress={() => setShowAddSource(true)}
       style={{
         height: 48, borderRadius: 16, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
-        backgroundColor: tint(Colors.primary, '10'),
+        backgroundColor: tint(Colors.primary, '10'), paddingHorizontal: 12,
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
       }}
     >
       <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
-      <Text style={{ fontSize: 14.5, fontWeight: '700', color: Colors.primary }}>{t('photos.addNew')}</Text>
+      <Text
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.85}
+        style={{ fontSize: 15, fontWeight: '700', color: Colors.primary, flexShrink: 1, textAlign: 'center' }}
+      >
+        {t('photos.addNew')}
+      </Text>
     </TouchableOpacity>
   );
 
@@ -1192,25 +1465,39 @@ export function PhotoGallery({
               activeOpacity={0.85}
               onPress={onTake}
               style={{
-                flex: 1, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
+                flex: 1, minWidth: 0, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
                 backgroundColor: tint(Colors.primary, '14'), borderRadius: 20,
-                paddingVertical: 22, alignItems: 'center', justifyContent: 'center', gap: 6,
+                paddingVertical: 22, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', gap: 6,
               }}
             >
               <Ionicons name="camera-outline" size={28} color={Colors.primary} />
-              <Text style={{ fontSize: 14.5, fontWeight: '700', color: Colors.text }}>{takeLabel}</Text>
+              <Text
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                minimumFontScale={0.85}
+                style={{ fontSize: 15, fontWeight: '700', color: Colors.text, flexShrink: 1, alignSelf: 'stretch', textAlign: 'center' }}
+              >
+                {takeLabel}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={onPick}
               style={{
-                flex: 1, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
+                flex: 1, minWidth: 0, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.primary,
                 backgroundColor: tint(Colors.primary, '14'), borderRadius: 20,
-                paddingVertical: 22, alignItems: 'center', justifyContent: 'center', gap: 6,
+                paddingVertical: 22, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', gap: 6,
               }}
             >
               <Ionicons name="images-outline" size={28} color={Colors.primary} />
-              <Text style={{ fontSize: 14.5, fontWeight: '700', color: Colors.text }}>{pickLabel}</Text>
+              <Text
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                minimumFontScale={0.85}
+                style={{ fontSize: 15, fontWeight: '700', color: Colors.text, flexShrink: 1, alignSelf: 'stretch', textAlign: 'center' }}
+              >
+                {pickLabel}
+              </Text>
             </TouchableOpacity>
           </View>
         )
@@ -1310,11 +1597,11 @@ export function PhotoGallery({
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <TouchableOpacity activeOpacity={0.85} onPress={onTake} style={addRowBtnStyle}>
                 <Ionicons name="camera-outline" size={22} color={Colors.primary} />
-                <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.primary }}>{takeLabel}</Text>
+                <Text numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.78} style={addRowLabelStyle}>{takeLabel}</Text>
               </TouchableOpacity>
               <TouchableOpacity activeOpacity={0.85} onPress={onPick} style={addRowBtnStyle}>
                 <Ionicons name="images-outline" size={22} color={Colors.primary} />
-                <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.primary }}>{pickLabel}</Text>
+                <Text numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.78} style={addRowLabelStyle}>{pickLabel}</Text>
               </TouchableOpacity>
             </View>
           ))}
@@ -1363,6 +1650,81 @@ export function PhotoGallery({
           onClose={() => setShowAddSource(false)}
         />
       )}
+
+      {/* Trình xem ảnh TOÀN MÀN HÌNH: Modal nền đen, ảnh khổ lớn
+          contain toàn màn, vuốt ngang qua lại GIỮA CÁC ẢNH CỦA CÙNG
+          BLOCK, chỉ số n/N góc trên trái, nút ✕ đóng góc trên phải.
+          Bên trong CHỈ ĐỂ XEM — cố ý không có nút sửa/xoá/ghim nào.
+          FlatList chỉ dựng khi đang mở (viewerKey khác null) để
+          initialScrollIndex luôn là đúng ảnh vừa được mở */}
+      <Modal
+        visible={viewerKey !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewerKey(null)}
+      >
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          {viewerKey !== null && photos.length > 0 && winW > 0 && (
+            <FlatList
+              ref={viewerListRef}
+              data={photos}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(p) => p.key}
+              getItemLayout={(_, index) => ({ length: winW, offset: winW * index, index })}
+              initialScrollIndex={viewerSafeIdx}
+              onScrollToIndexFailed={(info) => {
+                viewerListRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+              }}
+              onMomentumScrollEnd={(e) => {
+                const idx = Math.round(e.nativeEvent.contentOffset.x / winW);
+                if (idx >= 0 && idx < photos.length && idx !== viewerIdx) setViewerIdx(idx);
+              }}
+              windowSize={3}
+              initialNumToRender={3}
+              maxToRenderPerBatch={3}
+              renderItem={({ item: entry }) => (
+                <View style={{ width: winW, height: winH, alignItems: 'center', justifyContent: 'center' }}>
+                  <ExpoImage
+                    source={{ uri: entry.fullUri ?? entry.uri }}
+                    style={{ width: '100%', height: '100%' }}
+                    contentFit="contain"
+                    cachePolicy="memory-disk"
+                  />
+                </View>
+              )}
+            />
+          )}
+          {/* Chỉ số ảnh đang xem (cùng key đếm với chú thích dưới pager) */}
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute', top: 48, left: 16,
+              backgroundColor: 'rgba(24,17,52,0.55)', borderRadius: 999,
+              paddingHorizontal: 11, paddingVertical: 5,
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 }}>
+              {t('photos.counter', { x: viewerSafeIdx + 1, n: photos.length })}
+            </Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => setViewerKey(null)}
+            accessibilityLabel={t('photos.closeViewer')}
+            hitSlop={8}
+            style={{
+              position: 'absolute', top: 42, right: 16, width: 40, height: 40, borderRadius: 20,
+              backgroundColor: 'rgba(24,17,52,0.55)',
+              borderWidth: 1, borderColor: 'rgba(255,255,255,0.30)',
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Ionicons name="close" size={22} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -2222,32 +2584,37 @@ const SNOOZE_PRESETS: { days: number; labelKey: string }[] = [
  * (chọn là áp dụng ngay): ở đây chỉ khi bấm nút xác nhận "Hoãn nhắc" mới
  * gọi onConfirm(days); bấm × / nền ngoài là huỷ, không áp gì cả. Nơi gọi
  * tự chạy setLoanAlertSnooze / setItemAlertSnooze rồi đóng popup.
+ * Thêm hàng "Không nhắc lại nữa" khi nơi gọi truyền onNever: bấm là áp
+ * NGAY (như một lựa chọn dứt điểm, không qua nút xác nhận) — nơi gọi ghi
+ * mốc hoãn vĩnh viễn ALERT_SNOOZE_FOREVER_ISO qua chính setter snooze.
  * (QtyStepper của form số lượng món không dùng lại được ở đây vì nó gắn
  * chip "Tất cả" + đơn vị món — stepper ngày này làm riêng, nhỏ gọn.)
  */
 export function SnoozePopup({
-  visible, onClose, onConfirm,
+  visible, onClose, onConfirm, onNever,
 }: {
   visible: boolean;
   onClose: () => void;
   onConfirm: (days: number) => void;
+  onNever?: () => void;
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         {/* Card chỉ mount khi popup mở => lựa chọn luôn khởi tạo mới (mặc định 3 ngày) */}
-        {visible && <SnoozePopupCard onClose={onClose} onConfirm={onConfirm} />}
+        {visible && <SnoozePopupCard onClose={onClose} onConfirm={onConfirm} onNever={onNever} />}
       </View>
     </Modal>
   );
 }
 
 function SnoozePopupCard({
-  onClose, onConfirm,
+  onClose, onConfirm, onNever,
 }: {
   onClose: () => void;
   onConfirm: (days: number) => void;
+  onNever?: () => void;
 }) {
   const { t } = useT();
   /** Mức đang chọn: số ngày preset, hoặc null = đang chọn hàng Tuỳ chọn */
@@ -2275,7 +2642,7 @@ function SnoozePopupCard({
     backgroundColor: active ? tint(Colors.primary, '10') : '#fff',
   });
   const optionLabel = (active: boolean) => ({
-    fontSize: 14.5,
+    fontSize: 15,
     fontWeight: (active ? '800' : '600') as '800' | '600',
     color: active ? Colors.primary : Colors.text,
   });
@@ -2336,6 +2703,14 @@ function SnoozePopupCard({
             {stepperBtn('add-outline', 1, customDays >= 90)}
           </View>
         </View>
+        {!!onNever && (
+          <TouchableOpacity onPress={onNever} activeOpacity={0.85} style={rowStyle(false)}>
+            <Ionicons name="notifications-off" size={19} color={Colors.danger} />
+            <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.danger }}>
+              {t('alerts.snoozeNever')}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
       <AppButton
         title={t('alerts.snoozeConfirm')}
@@ -2506,7 +2881,10 @@ export function LoanActionBlock({ handlers }: { handlers: LoanActionHandlers }) 
             onPress={cell.onPress}
             activeOpacity={0.85}
             style={{
-              flex: 1, height: 62, borderRadius: 16, paddingHorizontal: 2, paddingVertical: 6,
+              // Không khoá chiều cao cố định: icon 20 + tối đa 2 dòng chữ
+              // 12/15 không vừa ô 62px (cắt dấu tiếng Việt) — sizing theo
+              // padding, minHeight giữ nhịp cũ khi nhãn chỉ 1 dòng
+              flex: 1, minHeight: 62, borderRadius: 16, paddingHorizontal: 2, paddingVertical: 8,
               alignItems: 'center', justifyContent: 'center', gap: 2,
               ...(cell.primary
                 ? {
@@ -2520,7 +2898,7 @@ export function LoanActionBlock({ handlers }: { handlers: LoanActionHandlers }) 
             <Text
               numberOfLines={2}
               style={{
-                fontSize: 10.5, fontWeight: '700', lineHeight: 13, textAlign: 'center',
+                fontSize: 12, fontWeight: '700', lineHeight: 15, textAlign: 'center',
                 color: cell.primary ? '#fff' : Colors.text,
               }}
             >

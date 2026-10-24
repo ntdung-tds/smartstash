@@ -30,7 +30,7 @@ import { useAppStore } from '@/store/useAppStore';
 import {
   formatVND, formatDate, formatDateForLang, parseDisplayDate,
   daysUntil, getAlertTier, isAlertSnoozed, addDaysISO, localTodayISO, ALERT_TIER_RANK,
-  pickRemindMessage,
+  pickRemindMessage, ALERT_SNOOZE_FOREVER_ISO,
   type AlertInfo,
 } from '@/utils';
 
@@ -160,7 +160,7 @@ function ActionTile({
         numberOfLines={1}
         adjustsFontSizeToFit
         minimumFontScale={0.8}
-        style={{ fontSize: 14.5, fontWeight: '700', lineHeight: 19, color, flexShrink: 1 }}
+        style={{ fontSize: 15, fontWeight: '700', lineHeight: 20, color, flexShrink: 1 }}
       >
         {label}
       </Text>
@@ -176,6 +176,7 @@ const STATUS_NOTE_CONFIG: Partial<Record<ItemStatus, { fieldKey: string; phKey: 
   DISPOSED: { fieldKey: 'statusNote.fieldDisposed', phKey: 'statusNote.phDisposed', hintKey: 'statusNote.hintDisposed', confirmKey: 'statusNote.confirmDisposed' },
   LOST: { fieldKey: 'statusNote.fieldLost', phKey: 'statusNote.phLost', hintKey: 'statusNote.hintLost', confirmKey: 'statusNote.confirmLost' },
   USED_UP: { fieldKey: 'statusNote.fieldUsedUp', phKey: 'statusNote.phUsedUp', hintKey: 'statusNote.hintUsedUp', confirmKey: 'statusNote.confirmUsedUp' },
+  EXPIRED: { fieldKey: 'statusNote.fieldExpired', phKey: 'statusNote.phExpired', hintKey: 'statusNote.hintExpired', confirmKey: 'statusNote.confirmExpired' },
 };
 
 /**
@@ -285,6 +286,7 @@ const ACTION_KEYS: Record<string, string> = {
   SPLIT: 'detail.action.split',
   RETURNED: 'detail.action.takenBack',
   USED_UP: 'detail.action.usedUp',
+  EXPIRED: 'detail.action.expired',
 };
 
 export default function ItemDetailScreen() {
@@ -366,7 +368,7 @@ export default function ItemDetailScreen() {
   const closeups = media.filter((m) => m.kind === 'ITEM_CLOSEUP');
   const scenePhotos = media.filter((m) => m.kind === 'ITEM_SCENE');
   const primaryCloseupId = closeups.find((m) => m.is_primary === 1)?.id ?? closeups[0]?.id;
-  const isEnded = item.status === 'SOLD' || item.status === 'GIFTED' || item.status === 'DONATED' || item.status === 'DISPOSED' || item.status === 'LOST' || item.status === 'USED_UP';
+  const isEnded = item.status === 'SOLD' || item.status === 'GIFTED' || item.status === 'DONATED' || item.status === 'DISPOSED' || item.status === 'LOST' || item.status === 'USED_UP' || item.status === 'EXPIRED';
 
   // ---- Record đang mở của món: tách lượt MƯỢN (kind LOAN) và GỬI BÁN (kind CONSIGNMENT) ----
   // Mọi record ACTIVE đều bị tự đóng khi món kết thúc/xoá nên cảnh báo dùng
@@ -426,6 +428,18 @@ export default function ItemDetailScreen() {
       await setItemAlertSnooze(item!.id, addDaysISO(localTodayISO(), days));
     } else {
       await setLoanAlertSnooze(snoozePopup.loan.id, addDaysISO(localTodayISO(), days));
+    }
+    setSnoozePopup(null);
+    refreshAfterAction();
+  }
+
+  /** "Không nhắc lại nữa" ở SnoozePopup: hoãn vĩnh viễn (mốc cực xa) qua cùng setter snooze */
+  async function handleSnoozeNever() {
+    if (!snoozePopup) return;
+    if (snoozePopup.kind === 'item') {
+      await setItemAlertSnooze(item!.id, ALERT_SNOOZE_FOREVER_ISO);
+    } else {
+      await setLoanAlertSnooze(snoozePopup.loan.id, ALERT_SNOOZE_FOREVER_ISO);
     }
     setSnoozePopup(null);
     refreshAfterAction();
@@ -737,6 +751,7 @@ export default function ItemDetailScreen() {
     actionTiles.push({ key: 'dispose', label: statusLabel('DISPOSED'), icon: statusIcon('DISPOSED'), color: statusColorFor('DISPOSED'), onPress: () => setNoteTarget('DISPOSED') });
     actionTiles.push({ key: 'lost', label: statusLabel('LOST'), icon: statusIcon('LOST'), color: statusColorFor('LOST'), onPress: () => setNoteTarget('LOST') });
     actionTiles.push({ key: 'usedUp', label: statusLabel('USED_UP'), icon: statusIcon('USED_UP'), color: statusColorFor('USED_UP'), onPress: () => setNoteTarget('USED_UP') });
+    actionTiles.push({ key: 'expired', label: statusLabel('EXPIRED'), icon: statusIcon('EXPIRED'), color: statusColorFor('EXPIRED'), onPress: () => setNoteTarget('EXPIRED') });
     // Ô cho từng trạng thái TỰ TẠO (icon/màu qua resolver): bấm mở hộp thoại
     // ghi chú generic; ẩn ô của chính trạng thái món đang mang
     for (const ct of customStatuses) {
@@ -759,8 +774,32 @@ export default function ItemDetailScreen() {
       onPress: () => setShowAddStatus(true),
     });
   }
+  // Ghép hàng 2 ô như cũ, NGOẠI TRỪ ô 'Cho mượn': nhãn của nó là
+  // "Cho mượn ({n} có sẵn)" — dài nhất lưới — nên khi nằm nửa hàng bị
+  // adjustsFontSizeToFit trong ActionTile co từ 15px xuống ~12px, nhỏ
+  // hơn hẳn các ô anh em. Cho ô này TRỌN MỘT HÀNG (flex: 1 một mình):
+  // bề ngang chữ khả dụng ~249dp so với nhãn ~143dp ở 15px nên không còn
+  // bị co, chữ bằng đúng 15px như mọi ô hành động chính trong block.
   const actionTileRows: (typeof actionTiles)[] = [];
-  for (let i = 0; i < actionTiles.length; i += 2) actionTileRows.push(actionTiles.slice(i, i + 2));
+  {
+    let pendingRow: typeof actionTiles = [];
+    const flush = () => {
+      if (pendingRow.length > 0) {
+        actionTileRows.push(pendingRow);
+        pendingRow = [];
+      }
+    };
+    for (const tile of actionTiles) {
+      if (tile.key === 'lend') {
+        flush();
+        actionTileRows.push([tile]);
+      } else {
+        pendingRow.push(tile);
+        if (pendingRow.length === 2) flush();
+      }
+    }
+    flush();
+  }
 
   async function handleLend() {
     if (!borrower.trim()) {
@@ -1222,6 +1261,7 @@ export default function ItemDetailScreen() {
         locations={locations}
         title={t('detail.move')}
         onClose={() => setShowMovePicker(false)}
+        allowCreate
         onSelect={async (loc) => { await moveItem(item.id, loc.id); bump(); load(); }}
       />
 
@@ -1268,7 +1308,7 @@ export default function ItemDetailScreen() {
           // record. Khi còn phần ở nhà, thao tác áp số lượng (giảm kho /
           // tách món) không bao giờ đụng tới record đang mở. DAMAGED và
           // trạng thái tự tạo không bao giờ đóng.
-          noteTarget && ['GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP'].includes(noteTarget) && openRecords.length > 0 && available <= 0
+          noteTarget && ['GIFTED', 'DONATED', 'DISPOSED', 'LOST', 'USED_UP', 'EXPIRED'].includes(noteTarget) && openRecords.length > 0 && available <= 0
             ? t('loan.autoCloseWarn', { n: openRecords.length })
             : null
         }
@@ -1352,6 +1392,7 @@ export default function ItemDetailScreen() {
         options={[
           { label: t('alerts.actSell'), icon: statusIcon('SOLD'), color: statusColorFor('SOLD'), onPress: openSell },
           { label: t('alerts.actUsedUp'), icon: statusIcon('USED_UP'), color: statusColorFor('USED_UP'), onPress: () => setNoteTarget('USED_UP') },
+          { label: t('alerts.actExpired'), icon: statusIcon('EXPIRED'), color: statusColorFor('EXPIRED'), onPress: () => setNoteTarget('EXPIRED') },
           { label: t('alerts.actDiscard'), icon: statusIcon('DISPOSED'), color: Colors.danger, onPress: () => setNoteTarget('DISPOSED') },
         ]}
         onClose={() => setShowHandlePopup(false)}
@@ -1370,6 +1411,7 @@ export default function ItemDetailScreen() {
         visible={!!snoozePopup}
         onClose={() => setSnoozePopup(null)}
         onConfirm={(days) => { handleSnoozePick(days).catch(() => {}); }}
+        onNever={() => { handleSnoozeNever().catch(() => {}); }}
       />
 
       <AppPopup

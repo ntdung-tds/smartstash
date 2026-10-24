@@ -7,21 +7,87 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   styles, Colors, ScreenHeader, SectionTitle, AppButton, ExtendLoanModal, TAB_BAR_CLEARANCE,
   SnoozePopup, ReturnQtyModal, LoanConvertModal, ConsignResolveModal, LoanActionBlock,
-  type LoanConvertPayload, type LoanConvertType, type ConsignResolvePayload,
+  type LoanConvertPayload, type LoanConvertType, type ConsignResolvePayload, type IconName,
 } from '@/components/ui';
-import type { Loan } from '@/types';
+import { CATEGORY_LABELS, type Loan } from '@/types';
 import {
   listActiveLoans, listActiveConsignments, listReturnedLoans, returnLoan, setLoanAlertSnooze, extendLoanDue,
   outstandingOf, convertLoanPortion, convertLoanToConsignment, resolveConsignment,
 } from '@/db/queries';
 import { useAppStore } from '@/store/useAppStore';
-import { formatDate, formatVND, daysUntil, getAlertTier, isAlertSnoozed, addDaysISO, localTodayISO, ALERT_TIER_RANK, pickRemindMessage } from '@/utils';
-import { alertTierColor, alertTierIcon, statusColorFor, tint } from '@/theme';
+import { formatDate, formatVND, daysUntil, getAlertTier, isAlertSnoozed, addDaysISO, localTodayISO, ALERT_TIER_RANK, pickRemindMessage, ALERT_SNOOZE_FOREVER_ISO } from '@/utils';
+import { alertTierColor, alertTierIcon, categoryColor, categoryIcon, categoryLabel, statusColorFor, tint } from '@/theme';
 import { getAlertSettings, ALERT_SETTINGS_DEFAULTS, type AlertSettings } from '@/services/alertSettings';
 import { useT } from '@/i18n';
 import { rescheduleAllReminders } from '@/services/notificationService';
 
-type LoanRow = Loan & { item_name: string; item_unit?: string };
+type LoanRow = Loan & { item_name: string; item_unit?: string; item_category: string };
+
+/** Chiều phân loại của hàng chip lọc ở tab Cho mượn (theo kind + quá hạn) */
+type LendFilter = 'ALL' | 'LOAN' | 'CONSIGN' | 'OVERDUE';
+
+/**
+ * Chip lọc của tab Cho mượn — cùng khuôn với FilterChip ở Trang chủ:
+ * cao 34, pill, trạng thái chọn = nền màu đặc + chữ/icon trắng; chưa chọn =
+ * nền trắng, viền Colors.border, nhãn primaryDark, icon theo màu chip.
+ */
+function LendFilterChip({
+  label, icon, color, active, onPress,
+}: {
+  label: string;
+  icon: IconName;
+  color: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={{
+        height: 34, paddingHorizontal: 13, borderRadius: 999,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+        backgroundColor: active ? color : '#fff',
+        borderWidth: 1.5, borderColor: active ? color : Colors.border,
+      }}
+    >
+      <Ionicons name={icon} size={15} color={active ? '#fff' : color} />
+      <Text style={{ fontSize: 13, fontWeight: '700', color: active ? '#fff' : Colors.primaryDark }}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+/**
+ * Chip phân loại theo DANH MỤC món — bản NHỎ GỌN của LendFilterChip cho
+ * hàng thứ hai: cao 30, icon 13, chữ 12, padding gọn. Trạng thái chọn =
+ * nền đặc theo MÀU CỦA PHÂN LOẠI (cùng quy ước chip ở Trang chủ và hàng
+ * chip loại lượt phía trên).
+ */
+function LendCatChip({
+  label, icon, color, active, onPress,
+}: {
+  label: string;
+  icon: IconName;
+  color: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={{
+        height: 30, paddingHorizontal: 10, borderRadius: 999,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+        backgroundColor: active ? color : '#fff',
+        borderWidth: 1.5, borderColor: active ? color : Colors.border,
+      }}
+    >
+      <Ionicons name={icon} size={13} color={active ? '#fff' : color} />
+      <Text style={{ fontSize: 12, fontWeight: '700', color: active ? '#fff' : Colors.primaryDark }}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
 
 const AVATAR_COLORS = [Colors.primary, Colors.coral, Colors.orange, Colors.teal, Colors.sky];
 
@@ -53,6 +119,10 @@ export default function LendingScreen() {
   const [extendTarget, setExtendTarget] = useState<LoanRow | null>(null);
   const [alertCfg, setAlertCfg] = useState<AlertSettings>(ALERT_SETTINGS_DEFAULTS);
   const [query, setQuery] = useState('');
+  const [lendFilter, setLendFilter] = useState<LendFilter>('ALL');
+  // Lọc theo danh mục của món (hàng chip thứ hai); null = Tất cả
+  const [catFilter, setCatFilter] = useState<string | null>(null);
+  const customCategories = useAppStore((s) => s.customCategories);
   const refreshTick = useAppStore((s) => s.refreshTick);
   const bump = useAppStore((s) => s.bump);
 
@@ -65,6 +135,52 @@ export default function LendingScreen() {
   const filteredActive = active.filter(matchesQuery);
   const filteredConsignments = consignments.filter(matchesQuery);
   const filteredReturned = returned.filter(matchesQuery);
+
+  // ----- Hàng chip phân loại (Tất cả · Cho mượn · Ký gửi · Quá hạn) -----
+  // Áp LÊN TRÊN kết quả đã lọc theo ô tìm kiếm (hai bộ lọc chạy cùng nhau):
+  // - LOAN: chỉ danh sách lượt mượn đang mở (ẩn section gửi bán + lịch sử)
+  // - CONSIGN: chỉ section gửi bán ở chân trang (danh sách chính để trống)
+  // - OVERDUE: chỉ các lượt mượn quá hạn — quá hạn tính ĐÚNG quy tắc thẻ
+  //   đang dùng: có hạn trả + chưa hoãn nhắc + getAlertTier ra mức OVERDUE
+  //   (record gửi bán không có hạn trả nên không thuộc nhóm này)
+  // - ALL: mọi section như trước; lịch sử đã trả chỉ hiện ở ALL.
+  const isOverdueLoan = (l: LoanRow) =>
+    !!l.expected_return_date
+    && !isAlertSnoozed(l.alert_snoozed_until)
+    && getAlertTier(l.expected_return_date, alertCfg.soonDays, alertCfg.watchDays)?.tier === 'OVERDUE';
+  const visibleActive =
+    lendFilter === 'OVERDUE'
+      ? filteredActive.filter(isOverdueLoan)
+      : lendFilter === 'CONSIGN'
+        ? []
+        : filteredActive;
+  const showConsignSection = lendFilter === 'ALL' || lendFilter === 'CONSIGN';
+  const showReturnedSection = lendFilter === 'ALL' && filteredReturned.length > 0;
+
+  // ----- Hàng chip phân loại theo DANH MỤC của món (hàng thứ hai) -----
+  // Chỉ hiện các phân loại ĐANG CÓ trong các danh sách sẽ hiển thị (sau
+  // khi đã lọc theo ô tìm kiếm + chip loại lượt): phần cho mượn đang thấy
+  // + section ký gửi (khi hiện) + lịch sử đã trả (khi hiện). Thứ tự theo
+  // taxonomy như Trang chủ: built-in theo CATEGORY_LABELS rồi tới tự tạo.
+  const catPresenceSource: LoanRow[] = [
+    ...visibleActive,
+    ...(showConsignSection ? filteredConsignments : []),
+    ...(showReturnedSection ? filteredReturned : []),
+  ];
+  const presentCats = [
+    ...Object.keys(CATEGORY_LABELS),
+    ...customCategories.map((ct) => ct.id),
+  ]
+    .filter((key) => catPresenceSource.some((l) => l.item_category === key))
+    .map((key) => ({ key, label: categoryLabel(key), icon: categoryIcon(key), color: categoryColor(key) }));
+  // Phân loại đang chọn mà không còn trong danh sách hiển thị (vd vừa trả
+  // món cuối của loại đó) thì coi như bỏ lọc — chip Tất cả sáng trở lại.
+  const effectiveCat = catFilter && presentCats.some((c) => c.key === catFilter) ? catFilter : null;
+  const byCat = (l: LoanRow) => !effectiveCat || l.item_category === effectiveCat;
+  const finalActive = visibleActive.filter(byCat);
+  const finalConsignments = filteredConsignments.filter(byCat);
+  const finalReturned = filteredReturned.filter(byCat);
+  const showReturnedFinal = lendFilter === 'ALL' && finalReturned.length > 0;
 
   const load = useCallback(async () => {
     const cfg = await getAlertSettings();
@@ -199,6 +315,16 @@ export default function LendingScreen() {
     load();
   }
 
+  /** "Không nhắc lại nữa" ở SnoozePopup: hoãn vĩnh viễn (mốc cực xa) qua cùng setter snooze */
+  async function handleSnoozeNever() {
+    if (!snoozeTarget) return;
+    await setLoanAlertSnooze(snoozeTarget.id, ALERT_SNOOZE_FOREVER_ISO);
+    setSnoozeTarget(null);
+    bump();
+    rescheduleAllReminders().catch(() => {});
+    load();
+  }
+
   return (
     <View style={[styles.screen, { paddingTop: 54 }]}>
       <View style={{ paddingHorizontal: 18, marginBottom: 10 }}>
@@ -220,10 +346,75 @@ export default function LendingScreen() {
             </TouchableOpacity>
           )}
         </View>
+        {/* Hàng chip phân loại theo kind + quá hạn, phong cách chip Trang chủ */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ marginTop: 10 }}
+          contentContainerStyle={{ gap: 8, paddingRight: 4 }}
+        >
+          <LendFilterChip
+            label={t('filter.all')}
+            icon="apps-outline"
+            color={Colors.primaryDark}
+            active={lendFilter === 'ALL'}
+            onPress={() => setLendFilter('ALL')}
+          />
+          <LendFilterChip
+            label={t('lend.title')}
+            icon="swap-horizontal"
+            color={Colors.orange}
+            active={lendFilter === 'LOAN'}
+            onPress={() => setLendFilter('LOAN')}
+          />
+          <LendFilterChip
+            label={t('lend.filterConsign')}
+            icon="storefront-outline"
+            color={statusColorFor('CONSIGNED')}
+            active={lendFilter === 'CONSIGN'}
+            onPress={() => setLendFilter('CONSIGN')}
+          />
+          <LendFilterChip
+            label={t('alerts.tierOVERDUE')}
+            icon="alert-circle-outline"
+            color={Colors.red}
+            active={lendFilter === 'OVERDUE'}
+            onPress={() => setLendFilter('OVERDUE')}
+          />
+        </ScrollView>
+        {/* Hàng chip thứ hai (nhỏ gọn): lọc theo DANH MỤC của món — chỉ
+            gồm các phân loại đang có trong danh sách hiển thị; 'Tất cả'
+            ở đầu để bỏ lọc. Chạy đồng thời với chip loại lượt + tìm kiếm */}
+        {presentCats.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ marginTop: 8 }}
+            contentContainerStyle={{ gap: 6, paddingRight: 4 }}
+          >
+            <LendCatChip
+              label={t('filter.all')}
+              icon="apps-outline"
+              color={Colors.primaryDark}
+              active={effectiveCat === null}
+              onPress={() => setCatFilter(null)}
+            />
+            {presentCats.map((c) => (
+              <LendCatChip
+                key={c.key}
+                label={c.label}
+                icon={c.icon}
+                color={c.color}
+                active={effectiveCat === c.key}
+                onPress={() => setCatFilter(effectiveCat === c.key ? null : c.key)}
+              />
+            ))}
+          </ScrollView>
+        )}
       </View>
 
       <FlatList
-        data={filteredActive}
+        data={finalActive}
         keyExtractor={(l) => l.id}
         contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: TAB_BAR_CLEARANCE }}
         ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
@@ -293,21 +484,38 @@ export default function LendingScreen() {
             </View>
           );
         }}
-        ListEmptyComponent={<Text style={styles.empty}>{hasQuery ? t('lend.searchEmpty') : t('lend.empty')}</Text>}
+        ListEmptyComponent={
+          // Đang lọc Ký gửi thì nội dung nằm ở section chân trang — không
+          // hiện dòng "trống" gây hiểu nhầm ở danh sách chính. Ngoại lệ:
+          // đang lọc thêm theo phân loại mà section ký gửi không còn gì
+          // thì báo trống theo phân loại ngay tại đây.
+          lendFilter === 'CONSIGN' && !(effectiveCat && finalConsignments.length === 0) ? <View /> : (
+            <Text style={styles.empty}>
+              {hasQuery
+                ? t('lend.searchEmpty')
+                : effectiveCat
+                  ? t('lend.filterCatEmpty')
+                  : lendFilter === 'OVERDUE'
+                    ? t('lend.filterOverdueEmpty')
+                    : t('lend.empty')}
+            </Text>
+          )
+        }
         ListFooterComponent={
           <View style={{ marginTop: 20, gap: 20 }}>
             {/* Đang gửi bán: record CONSIGNMENT đang mở — ngã ngũ bằng
                 Đã bán được / Lấy lại, hoặc nhắc người giữ qua Share.
-                Khi đang tìm kiếm mà section không có kết quả khớp thì ẩn cả section */}
-            {!(hasQuery && filteredConsignments.length === 0) && (
+                Chỉ hiện khi chip phân loại là Tất cả/Ký gửi; khi đang tìm
+                kiếm mà section không có kết quả khớp thì ẩn cả section */}
+            {showConsignSection && !((hasQuery || !!effectiveCat) && finalConsignments.length === 0) && (
             <View style={{ gap: 10 }}>
               <SectionTitle title={t('consign.section')} color={statusColorFor('CONSIGNED')} />
-              {filteredConsignments.length === 0 ? (
+              {finalConsignments.length === 0 ? (
                 <Text style={{ color: Colors.subtext, fontSize: 13 }}>{t('consign.empty')}</Text>
               ) : (
                 <ScrollView style={{ maxHeight: 360 }} nestedScrollEnabled showsVerticalScrollIndicator>
                   <View style={{ gap: 10 }}>
-                {filteredConsignments.map((rec) => {
+                {finalConsignments.map((rec) => {
                   const outstanding = outstandingOf(rec);
                   const consignColor = statusColorFor('CONSIGNED');
                   return (
@@ -358,12 +566,12 @@ export default function LendingScreen() {
             </View>
             )}
 
-            {filteredReturned.length > 0 && (
+            {showReturnedFinal && (
               <View style={{ gap: 10 }}>
                 <SectionTitle title={t('lend.historyTitle')} subtitle={t('lend.historySubtitle')} color={Colors.orange} />
                 <ScrollView style={{ maxHeight: 360 }} nestedScrollEnabled showsVerticalScrollIndicator>
                   <View style={{ gap: 10 }}>
-                    {filteredReturned.map((loan) => (
+                    {finalReturned.map((loan) => (
                       <View key={loan.id} style={[styles.card, { gap: 3 }]}>
                         <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.text }}>{loan.item_name} — {loan.borrower_name}</Text>
                         <Text style={{ fontSize: 12, color: Colors.subtext }}>
@@ -416,6 +624,7 @@ export default function LendingScreen() {
         visible={!!snoozeTarget}
         onClose={() => setSnoozeTarget(null)}
         onConfirm={(days) => { handleSnoozePick(days).catch(() => {}); }}
+        onNever={() => { handleSnoozeNever().catch(() => {}); }}
       />
 
       <ExtendLoanModal

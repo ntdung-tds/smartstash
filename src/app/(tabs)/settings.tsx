@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Switch, Modal, Pressable, TextInput } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Switch, Modal, Pressable, TextInput, Linking } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -15,6 +15,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { useT } from '@/i18n';
 import { rescheduleAllReminders } from '@/services/notificationService';
 import { getLimits, getPlanSync, loadPlan, setSimPro, type PlanId } from '@/services/planService';
+import { redeemPromoCode } from '@/services/promoService';
 import {
   getLockConfig, hasPin as lockHasPin, isBiometricAvailable, setLockConfig, setPin, verifyPin,
   LOCK_TIMEOUT_CHOICES, type LockConfig,
@@ -24,10 +25,11 @@ import { seedDemoData, clearDemoData } from '@/services/demoData';
 import { exportBackup, importBackup, BackupError } from '@/services/backupService';
 import { isDriveConfigured } from '@/config';
 import {
-  connectDrive, createDriveBackup, disconnectDrive, DriveError, getDriveConnectionInfo,
-  hasDriveMasterKey, listDriveBackups, restoreFromDrive, setupDriveMasterKey,
-  type DriveBackupFile,
+  checkDriveBackupMissing, connectDrive, createDriveBackup, disconnectDrive, DriveError,
+  getDriveConnectionInfo, hasDriveMasterKey, listDriveBackups, restoreFromDrive,
+  setupDriveMasterKey, type DriveBackupFile,
 } from '@/services/driveService';
+import { getRemoteFlagsSync, loadRemoteConfig } from '@/services/remoteConfigService';
 import { categoryLabel, statusLabel, tint } from '@/theme';
 import { SCHEMA_VERSION } from '@/db/schema';
 
@@ -190,6 +192,18 @@ export default function SettingsScreen() {
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
   // Gói hiện tại (Phase 6 — khung Pro): đọc qua planService, đổi qua cờ giả lập
   const [planId, setPlanId] = useState<PlanId>('FREE');
+  // Mã khuyến mãi tự quản của chủ app: mã chỉ sống trong state tạm của modal;
+  // kiểm tra + cấp quyền qua promoService (seam — TODO backend/RevenueCat ở đó)
+  const [promoOpen, setPromoOpen] = useState(false);
+  const [promoCode, setPromoCode] = useState('');
+  const [promoBusy, setPromoBusy] = useState(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  // Công tắc cấu hình từ xa cho ô nhập mã tự quản (remoteConfigService):
+  // tắt → ẩn hẳn điểm nhập mã, promoService cũng từ chối đổi mã ở service
+  const [selfPromoEnabled, setSelfPromoEnabled] = useState(true);
+  // Cảnh báo mất sao lưu Drive (Mảng 8): phát hiện bởi checkDriveBackupMissing
+  // trong driveService — mỗi lần mất chỉ hiện đúng 1 lần
+  const [driveMissingWarn, setDriveMissingWarn] = useState(false);
   // Bảo mật / khoá app (Phase 6): cấu hình ở app_kv, PIN ở SecureStore.
   // Modal PIN là form MỘT màn hình: các ô (cũ/mới/nhập lại) hiện cùng lúc,
   // có nút mắt hiện mã và lỗi kiểm tra hiện tại chỗ dưới các ô.
@@ -242,6 +256,14 @@ export default function SettingsScreen() {
     setDriveLastAt(await kvGet('drive_last_at'));
     setDriveLastStatus(await kvGet('drive_last_status'));
     setDriveAuto((await kvGet('drive_auto')) === '1');
+    await loadRemoteConfig().catch(() => {});
+    setSelfPromoEnabled(getRemoteFlagsSync().selfPromoEnabled);
+    // Phát hiện sao lưu Drive bị mất (Mảng 8): chỉ khi đang kết nối; hàm
+    // tự chống nhắc lại (1 lần/lần mất) và không bao giờ đụng dữ liệu máy
+    if (conn.connected) {
+      const missing = await checkDriveBackupMissing().catch(() => false);
+      if (missing) setDriveMissingWarn(true);
+    }
   }, []);
 
   /** Đổi một tuỳ chọn cảnh báo: lưu alert_cfg + đặt lại lịch nhắc + báo các màn khác tải lại */
@@ -257,6 +279,52 @@ export default function SettingsScreen() {
     const next = await setSimPro(enabled);
     setPlanId(next);
     bump();
+  }
+
+  /** Mở modal nhập mã khuyến mãi: xoá trắng ô + lỗi mỗi lần mở */
+  function openPromoModal() {
+    setPromoCode('');
+    setPromoError(null);
+    setPromoBusy(false);
+    setPromoOpen(true);
+  }
+
+  /**
+   * Áp dụng mã khuyến mãi: lỗi phân loại của promoService hiện TẠI CHỖ trong
+   * modal (không đóng modal); thành công thì đóng modal, làm mới hiển thị
+   * gói ngay (planService đã cấp qua cùng cơ chế gói) và báo quyền lợi đã nhận.
+   */
+  async function handlePromoApply() {
+    if (!promoCode.trim()) {
+      setPromoError(t('promo.empty'));
+      return;
+    }
+    setPromoBusy(true);
+    setPromoError(null);
+    try {
+      const res = await redeemPromoCode(promoCode);
+      if (res.status === 'success') {
+        setPromoOpen(false);
+        setPlanId(getPlanSync());
+        bump();
+        showInfo(t('promo.successTitle'), t('promo.successMsg'));
+      } else if (res.status === 'disabled') {
+        setPromoError(t('promo.disabled'));
+      } else if (res.status === 'not_found') {
+        setPromoError(t('promo.notFound'));
+      } else if (res.status === 'already_used') {
+        setPromoError(t('promo.used'));
+      } else {
+        setPromoError(t('promo.expired'));
+      }
+    } finally {
+      setPromoBusy(false);
+    }
+  }
+
+  /** Mã Google Play do Google xử lý — app chỉ mở trang đổi mã chính thức */
+  function openGooglePlayRedeem() {
+    Linking.openURL('https://play.google.com/redeem').catch(() => {});
   }
 
   /** Công tắc khoá app: bật lần đầu phải đặt PIN trước; tắt phải xác nhận bằng PIN hiện tại */
@@ -670,6 +738,34 @@ export default function SettingsScreen() {
             onPress={() => showInfo(t('plan.upgradeTitle'), t('plan.revenueCatSoon'))}
           />
         )}
+        {/* Nhập mã khuyến mãi tự quản của chủ app (promoService) — điểm nối
+            Premium dùng chung: thẻ gói này là bề mặt gói duy nhất của app.
+            Công tắc cấu hình từ xa (remoteConfigService.selfPromoEnabled):
+            TẮT → ẩn hẳn dòng nhập mã tự quản và thay bằng lối "Đổi mã
+            Google Play" mở thẳng trang redeem của Google, để lối đổi mã
+            Play (vốn chỉ nằm trong modal promo) vẫn tới được như cũ —
+            đúng chốt chặn Mảng 3: bản chưa có máy chủ chỉ giữ lối Play */}
+        {selfPromoEnabled ? (
+          <TouchableOpacity
+            onPress={openPromoModal}
+            activeOpacity={0.8}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, paddingVertical: 2 }}
+          >
+            <Ionicons name="ticket-outline" size={17} color={Colors.teal} />
+            <Text style={{ flex: 1, fontSize: 13.5, fontWeight: '700', color: '#fff' }}>{t('promo.haveCode')}</Text>
+            <Ionicons name="chevron-forward" size={15} color={Colors.onDarkMuted} />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            onPress={openGooglePlayRedeem}
+            activeOpacity={0.8}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, paddingVertical: 2 }}
+          >
+            <Ionicons name="logo-google" size={17} color={Colors.teal} />
+            <Text style={{ flex: 1, fontSize: 13.5, fontWeight: '700', color: '#fff' }}>{t('promo.playRow')}</Text>
+            <Ionicons name="chevron-forward" size={15} color={Colors.onDarkMuted} />
+          </TouchableOpacity>
+        )}
         <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.16)', marginTop: 6 }} />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <View style={{ flex: 1 }}>
@@ -970,7 +1066,7 @@ export default function SettingsScreen() {
               style={{ alignItems: 'center', paddingVertical: 6 }}
               onPress={() => { handleDriveDisconnect().catch(() => {}); }}
             >
-              <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.danger }}>{t('drive.disconnectBtn')}</Text>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.danger }}>{t('drive.disconnectBtn')}</Text>
             </TouchableOpacity>
           </>
         )}
@@ -1067,7 +1163,7 @@ export default function SettingsScreen() {
                 style={[styles.buttonSecondary, { paddingVertical: 8, paddingHorizontal: 12 }]}
                 onPress={async () => { await restoreItem(i.id); bump(); }}
               >
-                <Text style={[styles.buttonSecondaryText, { fontSize: 13 }]}>{t('set.restore')}</Text>
+                <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('set.restore')}</Text>
               </TouchableOpacity>
             </View>
           ))
@@ -1092,6 +1188,33 @@ export default function SettingsScreen() {
         message={infoPopup?.message}
         okLabel={t('common.gotIt')}
         onClose={() => setInfoPopup(null)}
+      />
+
+      {/* Cảnh báo mất sao lưu Drive (Mảng 8): chỉ hiện khi
+          checkDriveBackupMissing phát hiện danh sách sao lưu rỗng dù máy
+          đã từng sao lưu thành công (mỗi lần mất hiện đúng 1 lần). Hai
+          hành động: tạo lại sao lưu mới từ dữ liệu máy này (an toàn —
+          dữ liệu cục bộ không bao giờ bị đụng), hoặc xem hướng dẫn khôi
+          phục từ Thùng rác Google Drive */}
+      <AppPopup
+        visible={driveMissingWarn}
+        title={t('drive.missingTitle')}
+        message={t('drive.missingMsg')}
+        options={[
+          {
+            label: t('drive.missingRecreate'),
+            icon: 'cloud-upload-outline',
+            description: t('drive.missingRecreateDesc'),
+            onPress: () => { handleDriveBackupNow().catch(() => {}); },
+          },
+          {
+            label: t('drive.missingTrashGuide'),
+            icon: 'trash-outline',
+            description: t('drive.missingTrashGuideDesc'),
+            onPress: () => showInfo(t('drive.trashGuideTitle'), t('drive.trashGuideMsg')),
+          },
+        ]}
+        onClose={() => setDriveMissingWarn(false)}
       />
 
       {/* Xác nhận GHI ĐÈ toàn bộ dữ liệu trước khi khôi phục (danger) */}
@@ -1150,7 +1273,61 @@ export default function SettingsScreen() {
               onPress={pwModal?.mode === 'import' ? () => { handleImportPwSubmit().catch(() => {}); } : () => { handleExportSubmit().catch(() => {}); }}
             />
             <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setPwModal(null)}>
-              <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Modal nhập mã khuyến mãi tự quản của chủ app (promoService — seam
+          TODO backend/RevenueCat). Lỗi phân loại hiện tại chỗ trong modal.
+          Khu vực riêng cho mã Google Play: app không tự kiểm tra loại mã đó,
+          chỉ mở trang đổi mã chính thức của Google */}
+      <Modal visible={promoOpen} transparent animationType="fade" onRequestClose={() => setPromoOpen(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setPromoOpen(false)}>
+          <Pressable style={[styles.card, styles.modalCard, { gap: 6 }]} onPress={() => {}}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: Colors.text }}>
+              {t('promo.title')}
+            </Text>
+            <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
+              {t('promo.desc')}
+            </Text>
+            <Text style={[styles.label, { marginTop: 10 }]}>{t('promo.codeLabel')}</Text>
+            <TextInput
+              style={[styles.input, promoError ? { borderColor: Colors.danger } : null]}
+              value={promoCode}
+              onChangeText={(v) => {
+                setPromoCode(v);
+                if (promoError) setPromoError(null);
+              }}
+              placeholder={t('promo.placeholder')}
+              placeholderTextColor={Colors.faint}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoFocus
+            />
+            {promoError && (
+              <Text style={{ color: Colors.danger, fontSize: 13, marginTop: 8 }}>{promoError}</Text>
+            )}
+            <AppButton
+              title={t('promo.apply')}
+              icon="ticket-outline"
+              style={{ marginTop: 14 }}
+              loading={promoBusy}
+              onPress={() => { handlePromoApply().catch(() => {}); }}
+            />
+            <View style={{ height: 1, backgroundColor: Colors.border, marginTop: 16, marginBottom: 6 }} />
+            <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.text }}>{t('promo.playTitle')}</Text>
+            <Text style={{ color: Colors.subtext, fontSize: 12.5, lineHeight: 18 }}>{t('promo.playNote')}</Text>
+            <AppButton
+              title={t('promo.playBtn')}
+              icon="logo-google"
+              variant="secondary"
+              style={{ marginTop: 8 }}
+              onPress={openGooglePlayRedeem}
+            />
+            <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setPromoOpen(false)}>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -1208,7 +1385,7 @@ export default function SettingsScreen() {
               onPress={() => { handlePinSubmit().catch(() => {}); }}
             />
             <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setPinModal(null)}>
-              <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -1291,7 +1468,7 @@ export default function SettingsScreen() {
               onPress={() => { handleDrivePwSubmit().catch(() => {}); }}
             />
             <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setDrivePwModal(null)}>
-              <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

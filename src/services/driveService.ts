@@ -324,9 +324,18 @@ function driveBackupFileName(now: Date): string {
   return `smartstash-${d.toISOString().slice(0, 19).replace(/[:T]/g, '-')}.ssbak`;
 }
 
+/** app_kv: đã hiện cảnh báo mất sao lưu cho lần phát hiện hiện tại chưa */
+const MISSING_WARNED_KEY = 'drive_missing_warned';
+
 async function recordDriveStatus(ok: boolean): Promise<void> {
   try {
-    if (ok) await kvSet('drive_last_at', new Date().toISOString());
+    if (ok) {
+      await kvSet('drive_last_at', new Date().toISOString());
+      // Sao lưu thành công = đã có bản mới trên Drive: xoá cờ "đã cảnh
+      // báo mất sao lưu" để nếu SAU NÀY sao lưu lại mất tiếp thì cảnh báo
+      // được hiện lại (mỗi lần mất là một lần báo mới).
+      await kvSet(MISSING_WARNED_KEY, '0');
+    }
     await kvSet('drive_last_status', ok ? 'ok' : 'error');
   } catch {
     // ghi trạng thái là phụ trợ — không để nó che lỗi chính
@@ -393,6 +402,45 @@ export async function restoreFromDrive(fileId: string, password?: string): Promi
     }
   }
   await restoreData(parseBackupPayload(plain));
+}
+
+/**
+ * Phát hiện sao lưu trên Drive BỊ MẤT (đặc tả Mảng 8 của Bản đồ vận hành):
+ * danh sách bản sao lưu trên Drive RỖNG trong khi máy còn dấu vết ĐÃ TỪNG
+ * sao lưu thành công (app_kv drive_last_at) — nghĩa là thư mục/file sao
+ * lưu có thể đã bị người dùng xoá hoặc chuyển vào Thùng rác trên Drive.
+ *
+ * Trả true = "cần hiện cảnh báo NGAY lần này". Chống nhắc phiền: mỗi lần
+ * phát hiện chỉ báo đúng 1 lần (ghi app_kv drive_missing_warned); cờ tự
+ * xoá khi thấy sao lưu còn tồn tại, hoặc khi có sao lưu thành công mới
+ * (recordDriveStatus) — mất tiếp sau đó thì báo lại như lần mất mới.
+ *
+ * An toàn dữ liệu là trên hết: hàm này CHỈ ĐỌC (liệt kê file + đọc/ghi cờ
+ * app_kv), tuyệt đối không xoá hay chạm vào dữ liệu cục bộ — SQLite trên
+ * máy luôn là bản gốc an toàn. Mọi lỗi/không chắc chắn (chưa kết nối, mất
+ * mạng, chưa từng sao lưu…) đều trả false để không báo oan.
+ */
+export async function checkDriveBackupMissing(): Promise<boolean> {
+  try {
+    if (!isDriveConfigured()) return false;
+    // Chưa từng sao lưu thành công lần nào → không có gì để "mất"
+    if (!(await kvGet('drive_last_at'))) return false;
+    if (!(await isDriveConnected())) return false;
+    const files = await listDriveBackups();
+    if (files.length > 0) {
+      // Sao lưu vẫn còn: xoá cờ đã báo để lần mất SAU báo lại được
+      if ((await kvGet(MISSING_WARNED_KEY)) === '1') {
+        await kvSet(MISSING_WARNED_KEY, '0');
+      }
+      return false;
+    }
+    // Danh sách rỗng dù đã từng sao lưu → sao lưu đã mất thật
+    if ((await kvGet(MISSING_WARNED_KEY)) === '1') return false;
+    await kvSet(MISSING_WARNED_KEY, '1');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

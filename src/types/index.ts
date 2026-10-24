@@ -13,7 +13,8 @@ export type ItemStatus =
   | 'DONATED' // Đã bố thí (kết thúc)
   | 'DISPOSED' // Đã vứt bỏ (kết thúc)
   | 'LOST' // Thất lạc (kết thúc) [v2.1]
-  | 'USED_UP'; // Đã dùng hết (kết thúc)
+  | 'USED_UP' // Đã dùng hết (kết thúc)
+  | 'EXPIRED'; // Đã hết hạn (kết thúc) — đồ có hạn dùng đã quá hạn
 
 export type ItemCondition = 'NEW' | 'GOOD' | 'WORN' | 'NEED_REPAIR' | 'BROKEN';
 
@@ -212,6 +213,7 @@ export const STATUS_LABELS: Record<ItemStatus, string> = {
   DISPOSED: 'Đã vứt bỏ',
   LOST: 'Thất lạc',
   USED_UP: 'Đã dùng hết',
+  EXPIRED: 'Đã hết hạn',
 };
 
 export const CONDITION_LABELS: Record<ItemCondition, string> = {
@@ -238,6 +240,9 @@ export const CONDITION_HINTS: Record<ItemCondition, string> = {
   NEED_REPAIR: 'Bị lỗi hoặc hư một phần — cần sửa chữa trước khi dùng tiếp.',
   BROKEN: 'Hư hỏng nặng, hiện không sử dụng được.',
 };
+
+/** Loại vị trí suy từ độ sâu trong cây: gốc = Nơi ở → Phòng → Tủ/Kệ → Hộp (tối đa 4 cấp) */
+export const LOCATION_TYPE_BY_DEPTH: LocationType[] = ['PROPERTY', 'ROOM', 'FURNITURE', 'CONTAINER'];
 
 export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
   PROPERTY: 'Nơi ở',
@@ -277,6 +282,7 @@ export const STATUS_LABELS_EN: Record<ItemStatus, string> = {
   DISPOSED: 'Disposed',
   LOST: 'Lost',
   USED_UP: 'Used up',
+  EXPIRED: 'Expired',
 };
 
 export const CONDITION_LABELS_EN: Record<ItemCondition, string> = {

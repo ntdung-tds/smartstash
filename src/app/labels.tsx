@@ -253,7 +253,7 @@ export default function LabelsScreen() {
             right={
               locRows.length > 0 ? (
                 <TouchableOpacity onPress={() => toggleGroup(locRows, allLocsSelected)} hitSlop={6}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: Colors.primary }}>
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.primary }}>
                     {allLocsSelected ? t('labels.deselectAll') : t('labels.selectAll')}
                   </Text>
                 </TouchableOpacity>
@@ -298,7 +298,7 @@ export default function LabelsScreen() {
             right={
               itemRows.length > 0 ? (
                 <TouchableOpacity onPress={() => toggleGroup(itemRows, allItemsSelected)} hitSlop={6}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: Colors.primary }}>
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.primary }}>
                     {allItemsSelected ? t('labels.deselectAll') : t('labels.selectAll')}
                   </Text>
                 </TouchableOpacity>

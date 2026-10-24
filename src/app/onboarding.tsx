@@ -703,7 +703,7 @@ export default function OnboardingScreen() {
             ) : (
               <>
                 <Image source={require('../../assets/images/google-g.png')} style={{ width: 20, height: 20 }} />
-                <Text style={{ color: Colors.primaryDark, fontSize: 15.5, fontWeight: '700' }}>{t('ob.googleBtn')}</Text>
+                <Text style={{ color: Colors.primaryDark, fontSize: 15, fontWeight: '700' }}>{t('ob.googleBtn')}</Text>
               </>
             )}
           </TouchableOpacity>
@@ -721,7 +721,7 @@ export default function OnboardingScreen() {
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <Text style={{ color: '#fff', fontSize: 14.5, fontWeight: '700' }}>{t('ob.guestBtn')}</Text>
+            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>{t('ob.guestBtn')}</Text>
           </TouchableOpacity>
           <Text style={{ marginTop: 12, fontSize: 11, lineHeight: 16, color: 'rgba(255,255,255,0.55)', textAlign: 'center' }}>
             {t('ob.guestNote')}
@@ -808,7 +808,7 @@ export default function OnboardingScreen() {
             opacity: page === LAST_PAGE ? 0 : 1,
           }}
         >
-          <Text style={{ color: '#fff', fontSize: 14, fontWeight: '800' }}>{t('ob.continue')}</Text>
+          <Text style={{ color: '#fff', fontSize: 15, fontWeight: '800' }}>{t('ob.continue')}</Text>
         </TouchableOpacity>
       </View>
       </OnboardingErrorBoundary>
@@ -853,7 +853,7 @@ export default function OnboardingScreen() {
               style={{ alignItems: 'center', paddingVertical: 10 }}
               onPress={() => { setPwOpen(false); finish().catch(() => {}); }}
             >
-              <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.subtext }}>{t('ob.later')}</Text>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('ob.later')}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

@@ -188,7 +188,7 @@ export function AppLockScreen({ onUnlock }: { onUnlock: () => void }) {
           style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 10, marginTop: 4 }}
         >
           <Ionicons name="finger-print" size={19} color={Colors.onDarkMuted} />
-          <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.onDarkMuted }}>{t('lock.useBiometric')}</Text>
+          <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.onDarkMuted }}>{t('lock.useBiometric')}</Text>
         </TouchableOpacity>
       )}
     </View>
