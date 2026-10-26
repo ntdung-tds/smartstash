@@ -6,10 +6,12 @@
 //   Authorization: Bearer <token>).
 // - Lần đầu gặp account_id, server bind hash SHA-256 của token vào bảng
 //   backup_accounts; các lần sau phải khớp hash mới được phục vụ.
-// - TODO(RevenueCat): khi nối paywall thật, thay bước này bằng kiểm tra
-//   entitlement phía máy chủ — hiện tại tier_mb do client khai báo và server
-//   tin theo (chấp nhận được ở bản dev dùng giả lập Pro, KHÔNG đủ cho
-//   người dùng thật trả tiền).
+// - Entitlement phía máy chủ (chốt 27/10/2026): tier_mb KHÔNG còn do client
+//   khai báo — upload chỉ dùng tier_mb đã lưu cho tài khoản (mặc định gói
+//   nhỏ nhất khi tạo tài khoản, đổi gói chỉ qua quản trị viên bằng route
+//   PATCH /api/admin/backups/accounts/:id). Route POST /api/backups/tier
+//   (client tự đổi gói) đã gỡ cùng ngày; app v101 đổi gói qua popup liên
+//   hệ quản trị viên thay vì gọi route đó.
 //
 // Chính sách đã chốt (24/10/2026, số bản giữ lại thành cờ từ xa 25/10/2026):
 // - Giữ N bản mới nhất cho mỗi tài khoản (xoay vòng phía máy chủ sau mỗi
@@ -164,15 +166,9 @@ export async function upload(request, env) {
   const fileName = sanitizeFileName(request.headers.get('X-File-Name'));
   if (!fileName) return err('invalid_name', 'Thiếu hoặc sai tên file (X-File-Name).', 400);
 
-  const tierHeader = parseInt(request.headers.get('X-Tier-Mb') || '', 10);
-  let tierMb = auth.tier_mb;
-  const tierSizes = await getTierSizes(env);
-  if (tierSizes.includes(tierHeader) && tierHeader !== auth.tier_mb) {
-    await env.DB.prepare(
-      'UPDATE backup_accounts SET tier_mb = ?, updated_at = ? WHERE account_id = ?'
-    ).bind(tierHeader, nowIso(), auth.account_id).run();
-    tierMb = tierHeader;
-  }
+  // 27/10/2026: hạn mức LUÔN lấy theo tier_mb đã lưu cho tài khoản — header
+  // X-Tier-Mb do client gửi (nếu có) bị bỏ qua, không còn tự nâng gói.
+  const tierMb = auth.tier_mb;
 
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.byteLength === 0) return err('empty_file', 'File sao lưu rỗng.', 400);
@@ -311,17 +307,6 @@ export async function linkAccount(request, env) {
   return json({ ok: true, account_id: auth.account_id, app_account_id: anchor });
 }
 
-// POST /api/backups/tier { tier_mb } — app (xác thực tài khoản).
-export async function setTier(request, env) {
-  const auth = await authenticate(env, request);
-  if (auth.error) return auth.error;
-  const body = await readJson(request);
-  const tierSizes = await getTierSizes(env);
-  if (body.__invalid || !tierSizes.includes(body.tier_mb)) {
-    return err('invalid_tier', 'tier_mb phải là một trong ' + tierSizes.join(', ') + '.', 400);
-  }
-  await env.DB.prepare(
-    'UPDATE backup_accounts SET tier_mb = ?, updated_at = ? WHERE account_id = ?'
-  ).bind(body.tier_mb, nowIso(), auth.account_id).run();
-  return json({ ok: true, tier_mb: body.tier_mb });
-}
+// Route POST /api/backups/tier đã gỡ ngày 27/10/2026 (client tự đổi gói
+// = tự nâng hạn mức — không chấp nhận được khi mở cho người dùng thật).
+// Đổi gói lưu trữ chỉ qua quản trị viên: PATCH /api/admin/backups/accounts/:id.

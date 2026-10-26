@@ -141,6 +141,10 @@ export function hasRole(user, minRole) {
 export async function createSession(env, userId) {
   const token = newSessionToken();
   const expires = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 3600 * 1000).toISOString();
+  // 27/10/2026: dọn các phiên đã hết hạn mỗi lần đăng nhập — trước đây
+  // hàng hết hạn không bao giờ bị xoá (chỉ xoá khi chính token đó được
+  // trình lại hoặc khi đăng xuất/đổi mật khẩu).
+  await env.DB.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').bind(new Date().toISOString()).run();
   await env.DB.prepare(
     'INSERT INTO admin_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)'
   ).bind(await sha256Hex(token), userId, expires).run();

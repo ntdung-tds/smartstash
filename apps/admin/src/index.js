@@ -16,8 +16,8 @@
 //     POST /api/auth/login          — đăng nhập, trả session token
 //   MÂY CỦA TÔI (xác thực tài khoản TOFU, không cần đăng nhập quản trị):
 //     POST /api/backups/upload, GET /api/backups/download,
-//     GET  /api/backups/list, GET /api/backups/usage-account,
-//     POST /api/backups/tier
+//     GET  /api/backups/list, GET /api/backups/usage-account
+//     (POST /api/backups/tier đã gỡ 27/10/2026 — đổi gói chỉ qua quản trị)
 //   (Trả 503 storage_not_configured khi Worker chưa bind R2.)
 //   QUẢN TRỊ (bắt buộc phiên đăng nhập: Authorization: Bearer <session>):
 //     mọi route còn lại dưới /api/*. Quyền tối thiểu từng route:
@@ -108,8 +108,6 @@ export default {
         response = await backupRoutes.list(request, env);
       } else if (path === '/api/backups/usage-account' && method === 'GET') {
         response = await backupRoutes.usageAccount(request, env);
-      } else if (path === '/api/backups/tier' && method === 'POST') {
-        response = await backupRoutes.setTier(request, env);
       } else if (path === '/api/backups/link' && method === 'POST') {
         response = await backupRoutes.linkAccount(request, env);
       } else if (!path.startsWith('/api/')) {

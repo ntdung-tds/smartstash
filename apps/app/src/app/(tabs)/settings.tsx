@@ -35,13 +35,11 @@ import {
   formatBytes,
   getCloudApiUrl,
   getStorageTier,
-  setStorageTier,
 } from '@/services/storagePlanService';
 import {
   CloudBackupError,
   downloadCloudBackup,
   getCloudUsage,
-  setCloudTier,
   uploadCloudBackup,
   type CloudUsage,
 } from '@/services/cloudBackupService';
@@ -766,26 +764,14 @@ export default function SettingsScreen() {
     }
   }
 
-  /** Lưu trữ trên Cloud của Smartstash: đổi gói (đồng bộ lên máy chủ) */
+  /** Lưu trữ trên Cloud của Smartstash: đổi gói (v101) — gói lưu trữ chỉ
+      đổi được qua quản trị viên kể từ khi máy chủ ngừng tin tier do app
+      khai báo (27/10/2026, route POST /api/backups/tier đã gỡ). Bấm gói
+      khác chỉ hiện popup hướng dẫn liên hệ hỗ trợ; lựa chọn hiển thị
+      vẫn là gói thật từ máy chủ (usage.tier_mb) nên không lệch. */
   async function handleCloudTierChange(mb: number): Promise<void> {
     if (mb === cloudTier) return;
-    setCloudBusy(true);
-    try {
-      const url = await getCloudApiUrl();
-      if (url) {
-        const serverTier = await setCloudTier(mb);
-        await setStorageTier(serverTier);
-        setCloudTierState(serverTier);
-      } else {
-        await setStorageTier(mb);
-        setCloudTierState(mb);
-      }
-      await refreshCloudUsage(true).catch(() => {});
-    } catch (e) {
-      showInfo(t('cloud.title'), cloudErrorMessage(e));
-    } finally {
-      setCloudBusy(false);
-    }
+    showInfo(t('cloud.title'), t('cloud.tierByAdmin', { email: 'dungnt.apps@gmail.com' }));
   }
 
   /** Lưu trữ trên Cloud của Smartstash: mở modal mật khẩu (xoá trắng ô + lỗi mỗi lần mở) */

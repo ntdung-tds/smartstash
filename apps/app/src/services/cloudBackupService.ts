@@ -3,7 +3,6 @@ import { decryptBackupText, encryptBackupText } from './backupCrypto';
 import {
   getCloudApiUrl,
   getOrCreateCloudAccount,
-  getStorageTier,
 } from './storagePlanService';
 import { getGoogleIdToken } from './driveService';
 
@@ -124,7 +123,6 @@ export async function uploadCloudBackup(password: string): Promise<{
   files: CloudBackupFile[];
 }> {
   const base = await apiBase();
-  const tier = await getStorageTier();
   const payload = await collectData({ compressImages: true });
   const fileText = await encryptBackupText(JSON.stringify(payload), password);
   const name = fileNameForNow();
@@ -135,7 +133,6 @@ export async function uploadCloudBackup(password: string): Promise<{
       headers: {
         ...(await authHeaders()),
         'X-File-Name': name,
-        'X-Tier-Mb': String(tier),
         'Content-Type': 'application/octet-stream',
       },
       body: fileText,
@@ -183,23 +180,10 @@ export async function getCloudUsage(): Promise<CloudUsage> {
   return { ...data, files: data.files ?? [] };
 }
 
-/** Đổi gói lưu trữ (đồng bộ lên máy chủ) */
-export async function setCloudTier(mb: number): Promise<number> {
-  const base = await apiBase();
-  let res: Response;
-  try {
-    res = await fetch(`${base}/api/backups/tier`, {
-      method: 'POST',
-      headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier_mb: mb }),
-    });
-  } catch {
-    throw new CloudBackupError('NETWORK', 'Không kết nối được tới máy chủ.');
-  }
-  if (!res.ok) throw toCloudError(res, await readErrorBody(res));
-  const data = (await res.json()) as { tier_mb: number };
-  return data.tier_mb;
-}
+// Hàm setCloudTier (POST /api/backups/tier) đã gỡ ở v101 cùng route máy
+// chủ — đổi gói lưu trữ chỉ qua quản trị viên (xem handleCloudTierChange
+// trong settings.tsx). Giữ lại getStorageTier ở storagePlanService cho
+// lựa chọn hiển thị ban đầu; hạn mức thật luôn lấy từ usage của máy chủ.
 
 /**
  * Khôi phục từ một bản trên mây: tải về → giải mã → validate → ghi đè
