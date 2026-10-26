@@ -46,7 +46,7 @@ async function audit(env, actor, action, target, detail) {
 export async function listPromos(env) {
   const { results } = await env.DB.prepare(
     `SELECT p.*,
-       (SELECT COUNT(*) FROM redemptions r WHERE r.code = p.code AND r.result = 'granted') AS used
+       (SELECT COUNT(*) FROM redemptions r WHERE r.code = p.code AND r.result = 'granted' AND r.revoked_at IS NULL) AS used
      FROM promo_codes p ORDER BY p.created_at DESC`
   ).all();
   return json({ ok: true, promos: results });
@@ -122,7 +122,7 @@ export async function updatePromo(request, env, codeRaw, actor = 'admin') {
       return err('invalid_fields', 'max_uses phải là số nguyên >= 0.', 400);
     }
     const granted = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM redemptions WHERE code = ? AND result = 'granted'"
+      "SELECT COUNT(*) AS n FROM redemptions WHERE code = ? AND result = 'granted' AND revoked_at IS NULL"
     ).bind(code).first();
     if (maxUses < (granted ? granted.n : 0)) {
       return err('invalid_fields', 'max_uses không được nhỏ hơn số lượt đã đổi.', 400);
@@ -198,6 +198,92 @@ export async function listRedemptions(env, url) {
   params.push(limit, offset);
   const { results } = await env.DB.prepare(sql).bind(...params).all();
   return json({ ok: true, redemptions: results, total: totalRow?.n || 0, offset, limit });
+}
+
+// POST /api/admin/redemptions/:id/revoke — thu hồi một lượt đổi đã cấp
+// (chỉ admin, lý do bắt buộc). Khác nút thu hồi theo tài khoản ở
+// /api/entitlements/revoke (cắt Pro bất kể nguồn): nút này huỷ đúng
+// lượt đổi đó, và chỉ cắt Pro khi quyền hiện tại đúng là từ lượt này.
+// Một lần thu hồi làm 3 việc:
+//   (a) Dòng lượt đổi được đánh dấu đã thu hồi (revoked_at/by/reason) —
+//       lịch sử KHÔNG bị xoá, dòng thu hồi rồi thì bấm lại sẽ báo 409.
+//   (b) Lượt dùng của mã được trả lại 1 (không trừ xuống âm; mã đã bị
+//       xoá hẳn thì bỏ qua) và cửa chặn "đã dùng mã cùng đợt" bỏ qua
+//       dòng đã thu hồi, nên tài khoản được đổi lại mã cùng đợt.
+//   (c) Cắt Pro tặng về free CHỈ KHI: tài khoản đang pro_promo còn hạn,
+//       lượt này là lượt cấp chưa thu hồi mới nhất của tài khoản, và hạn
+//       tặng khớp ngày đổi + số ngày của mã (sai số 120 giây, vì
+//       redeemed_at lấy giờ DB theo giây còn promo_until tính theo mili
+//       giây). Tài khoản trả phí thật không bao giờ bị đụng; tài khoản đã
+//       đổi mã khác sau đó thì giữ nguyên Pro hiện tại.
+export async function revokeRedemption(request, env, actor, idRaw) {
+  const body = await readJson(request);
+  if (body.__invalid) return err('invalid_body', 'Body phải là JSON object.', 400);
+  const reason = String(body.reason ?? '').trim();
+  if (!reason) return err('invalid_fields', 'Thu hồi lượt đổi cần có lý do.', 400);
+  const id = Number(idRaw);
+  if (!Number.isInteger(id)) return err('invalid_fields', 'ID lượt đổi không hợp lệ.', 400);
+  const row = await env.DB.prepare('SELECT * FROM redemptions WHERE id = ?').bind(id).first();
+  if (!row) return err('not_found', 'Không tìm thấy lượt đổi.', 404);
+  if (row.result !== 'granted') {
+    return err('invalid_state', 'Chỉ thu hồi được lượt đổi đã cấp thành công.', 400);
+  }
+  if (row.revoked_at) return err('already_revoked', 'Lượt đổi này đã bị thu hồi rồi.', 409);
+  const now = nowIso();
+  const account = await env.DB.prepare(
+    'SELECT * FROM app_accounts WHERE revenuecat_app_user_id = ?'
+  ).bind(row.account_id).first();
+  const codeRow = await env.DB.prepare(
+    'SELECT days FROM promo_codes WHERE code = ?'
+  ).bind(row.code).first();
+  let cut = false;
+  if (account && account.plan_status === 'pro_promo' && account.promo_until && account.promo_until > now) {
+    const latest = await env.DB.prepare(
+      `SELECT id FROM redemptions
+        WHERE account_id = ? AND result = 'granted' AND revoked_at IS NULL
+        ORDER BY redeemed_at DESC, id DESC LIMIT 1`
+    ).bind(row.account_id).first();
+    if (latest && latest.id === row.id) {
+      if (!codeRow) {
+        cut = true;
+      } else {
+        const redeemedMs = Date.parse(String(row.redeemed_at).replace(' ', 'T') + 'Z');
+        const expectedMs = redeemedMs + codeRow.days * 86400000;
+        if (!Number.isNaN(redeemedMs) && Math.abs(Date.parse(account.promo_until) - expectedMs) < 120000) {
+          cut = true;
+        }
+      }
+    }
+  }
+  // Đánh dấu trước, kiểm tra changes để hai lần thu hồi cùng lúc không
+  // trừ lượt dùng 2 lần.
+  const mark = await env.DB.prepare(
+    'UPDATE redemptions SET revoked_at = ?, revoked_by = ?, revoked_reason = ? WHERE id = ? AND revoked_at IS NULL'
+  ).bind(now, actor, reason, id).run();
+  if ((mark.meta?.changes ?? 0) === 0) {
+    return err('already_revoked', 'Lượt đổi này đã bị thu hồi rồi.', 409);
+  }
+  const batch = [];
+  if (codeRow) {
+    batch.push(env.DB.prepare(
+      'UPDATE promo_codes SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END WHERE code = ?'
+    ).bind(row.code));
+  }
+  if (cut) {
+    batch.push(env.DB.prepare(
+      `UPDATE app_accounts SET plan_status = 'free', promo_until = NULL, updated_at = ?
+        WHERE revenuecat_app_user_id = ? AND plan_status = 'pro_promo'`
+    ).bind(now, row.account_id));
+  }
+  batch.push(env.DB.prepare(
+    'INSERT INTO admin_audit (actor, action, target, detail) VALUES (?, ?, ?, ?)'
+  ).bind(actor, 'redemption_revoke', row.code, JSON.stringify({
+    account_id: row.account_id, redemption_id: row.id, reason, entitlement_cut: cut,
+  })));
+  await env.DB.batch(batch);
+  return json({
+    ok: true, id: row.id, code: row.code, account_id: row.account_id, entitlement_cut: cut,
+  });
 }
 
 // GET /api/promo/:code/redemptions — nhật ký đổi của một mã (quản trị).
@@ -319,7 +405,7 @@ export async function redeem(request, env) {
   const prior = await env.DB.prepare(
     `SELECT r.id FROM redemptions r
        JOIN promo_codes p ON p.code = r.code
-      WHERE r.account_id = ? AND r.result = 'granted'
+      WHERE r.account_id = ? AND r.result = 'granted' AND r.revoked_at IS NULL
         AND (p.campaign = ? OR (p.campaign IS NULL AND p.code = ?))
       LIMIT 1`
   ).bind(accountId, promo.campaign, promo.code).first();

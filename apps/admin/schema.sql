@@ -42,7 +42,10 @@ CREATE TABLE IF NOT EXISTS redemptions (
   result           TEXT NOT NULL CHECK (result IN ('granted', 'rejected', 'error')),
   reason           TEXT,
   idempotency_key  TEXT UNIQUE,
-  redeemed_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  redeemed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at       TEXT,
+  revoked_by       TEXT,
+  revoked_reason   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_redemptions_code ON redemptions (code);
 CREATE INDEX IF NOT EXISTS idx_redemptions_account ON redemptions (account_id);

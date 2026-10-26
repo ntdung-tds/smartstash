@@ -29,6 +29,7 @@
     app_account_delete: 'Xoá tài khoản app',
     entitlement_grant: 'Cấp quyền lợi',
     entitlement_revoke: 'Thu hồi quyền lợi',
+    redemption_revoke: 'Thu hồi lượt đổi',
     config_update: 'Sửa cấu hình',
     config_restore: 'Khôi phục cấu hình',
     backup_tier_change: 'Đổi gói sao lưu',
@@ -1008,9 +1009,16 @@
       q.set('offset', String(logOffset));
       var data = await api('/api/promo/redemptions?' + q.toString());
       box.innerHTML = tableHTML(
-        ['Thời gian', 'Mã', 'Kết quả', 'Tài khoản', 'Lý do'],
+        ['Thời gian', 'Mã', 'Kết quả', 'Tài khoản', 'Lý do', 'Thao tác'],
         data.redemptions.map(function (r) {
-          return [esc(fmtDate(r.redeemed_at)), esc(r.code), esc(r.result), esc(r.account_id), esc(r.reason || '—')];
+          // Thu hồi từng lượt đổi (chỉ admin, chỉ dòng đã cấp thành công
+          // và chưa thu hồi): nút hỏi lý do rồi gọi route thu hồi riêng.
+          var action = '—';
+          if (r.revoked_at) action = 'Đã thu hồi' + (r.revoked_reason ? ' (' + esc(r.revoked_reason) + ')' : '');
+          else if (r.result === 'granted' && isAdmin()) {
+            action = '<button type="button" class="secondary small redemption-revoke" data-id="' + r.id + '">Thu hồi</button>';
+          }
+          return [esc(fmtDate(r.redeemed_at)), esc(r.code), esc(r.result), esc(r.account_id), esc(r.reason || '—'), action];
         }),
         'Không tìm thấy lượt đổi nào khớp điều kiện.'
       );
@@ -1020,6 +1028,27 @@
     } catch (e) { box.innerHTML = '<p class="status bad">Lỗi: ' + esc(e.message) + '</p>'; }
   }
   $('logSearchBtn').addEventListener('click', function () { logOffset = 0; loadLog(); });
+  // Thu hồi từng lượt đổi từ nhật ký (uỷ quyền click vì bảng tải lại sau
+  // mỗi lần tra cứu; lý do hỏi bằng prompt như các nút Xoá/Khoá khác).
+  $('logList').addEventListener('click', async function (ev) {
+    var btn = ev.target.closest('.redemption-revoke');
+    if (!btn) return;
+    var reason = window.prompt('Lý do thu hồi lượt đổi này (bắt buộc, ghi vào kiểm toán):');
+    if (reason === null) return;
+    reason = reason.trim();
+    if (!reason) { setStatus($('logMsg'), 'Thu hồi cần có lý do.', false); return; }
+    try {
+      var d = await api('/api/admin/redemptions/' + btn.dataset.id + '/revoke', {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason }),
+      });
+      setStatus($('logMsg'), 'Đã thu hồi lượt đổi mã ' + d.code +
+        (d.entitlement_cut
+          ? ' và cắt quyền Pro tặng của tài khoản.'
+          : ' (giữ nguyên Pro hiện tại của tài khoản vì quyền đó không từ lượt này).'), true);
+      loadLog();
+    } catch (e) { setStatus($('logMsg'), 'Lỗi: ' + e.message, false); }
+  });
 
   // --- Tài khoản app ---
   var appAccountOffset = 0;

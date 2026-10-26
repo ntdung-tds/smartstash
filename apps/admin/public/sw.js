@@ -10,7 +10,7 @@
 // nên không cài service worker mới, cache cũ (cache-first) phục vụ bản PWA cũ
 // mãi — người dùng nhập ADMIN_TOKEN vào bản cũ thì không bao giờ đăng nhập
 // được vì bản cũ không có màn đăng nhập.
-const CACHE = 'smartstash-admin-v19';
+const CACHE = 'smartstash-admin-v20';
 const SHELL = ['index.html', 'styles.css', 'app.js', 'manifest.json'];
 
 self.addEventListener('install', (event) => {

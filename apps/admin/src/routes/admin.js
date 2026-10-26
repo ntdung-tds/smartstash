@@ -15,11 +15,12 @@ export async function getStats(env) {
   const promo = await env.DB.prepare(
     'SELECT COUNT(*) AS total, COALESCE(SUM(enabled), 0) AS enabled FROM promo_codes'
   ).first();
+  // Lượt đổi đã bị thu hồi không tính vào "thành công" nữa.
   const redeem = await env.DB.prepare(
-    "SELECT result, COUNT(*) AS n FROM redemptions GROUP BY result"
+    "SELECT result, COUNT(*) AS n FROM redemptions WHERE revoked_at IS NULL GROUP BY result"
   ).all();
   const redeem30 = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM redemptions WHERE result = 'granted' AND redeemed_at >= datetime('now', '-30 days')"
+    "SELECT COUNT(*) AS n FROM redemptions WHERE result = 'granted' AND revoked_at IS NULL AND redeemed_at >= datetime('now', '-30 days')"
   ).first();
   const backups = await env.DB.prepare(
     'SELECT COUNT(*) AS files, COALESCE(SUM(size_bytes), 0) AS bytes FROM backup_files'
@@ -38,7 +39,7 @@ export async function getStats(env) {
   // Lượt đổi theo ngày, 14 ngày gần nhất (cho biểu đồ nhỏ ở Tổng quan).
   const daily = await env.DB.prepare(
     `SELECT substr(redeemed_at, 1, 10) AS day, result, COUNT(*) AS n
-       FROM redemptions WHERE redeemed_at >= datetime('now', '-14 days')
+       FROM redemptions WHERE revoked_at IS NULL AND redeemed_at >= datetime('now', '-14 days')
       GROUP BY day, result ORDER BY day ASC`
   ).all();
 

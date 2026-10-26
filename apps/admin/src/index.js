@@ -145,6 +145,8 @@ export default {
             response = need('staff') || await promoRoutes.updatePromo(request, env, decodeURIComponent(seg[2]), user.email);
           } else if (seg[0] === 'api' && seg[1] === 'promo' && seg.length === 3 && method === 'DELETE') {
             response = need('admin') || await promoRoutes.deletePromo(request, env, decodeURIComponent(seg[2]), user.email);
+          } else if (seg[0] === 'api' && seg[1] === 'admin' && seg[2] === 'redemptions' && seg[4] === 'revoke' && method === 'POST') {
+            response = need('admin') || await promoRoutes.revokeRedemption(request, env, user.email, seg[3]);
           } else if (path === '/api/entitlements/grant' && method === 'POST') {
             response = need('admin') || await entitlementRoutes.grant(request, env, user.email);
           } else if (path === '/api/entitlements/revoke' && method === 'POST') {
