@@ -54,6 +54,10 @@ export default function TabsLayout() {
         tabBarStyle: {
           position: 'absolute', left: 10, right: 10, bottom: 12,
           height: 70, paddingTop: 8, paddingBottom: 8,
+          // v95: đệm ngang trong thanh để nhãn tab đầu/cuối ("Trang chủ",
+          // "Cài đặt") không dính sát mép màn hình; đệm đối xứng nên nút
+          // tròn giữa vẫn đúng tâm màn hình.
+          paddingHorizontal: 12,
           borderRadius: 30, backgroundColor: '#fff', borderTopWidth: 0,
           ...floatingShadow,
         },
