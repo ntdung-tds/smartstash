@@ -5,6 +5,7 @@ import {
   getOrCreateCloudAccount,
   getStorageTier,
 } from './storagePlanService';
+import { getGoogleIdToken } from './driveService';
 
 /**
  * Sao lưu "mây của tôi" (Phase 6) — app ↔ Worker qua HTTPS.
@@ -59,6 +60,27 @@ async function apiBase(): Promise<string> {
 async function authHeaders(): Promise<Record<string, string>> {
   const { accountId, token } = await getOrCreateCloudAccount();
   return { 'X-Account-Id': accountId, Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Nối tài khoản sao lưu (UUID ẩn danh) với tài khoản app (Google) — v92.
+ * Gọi fire-and-forget sau mỗi lần sao lưu/lấy danh sách thành công, KHÔNG
+ * bao giờ chặn sao lưu: chưa đăng nhập Google thì thôi, máy chủ từ chối
+ * (kể cả 409 đã nối với tài khoản khác) thì cũng thôi. Nhờ đó trang quản
+ * trị mới thấy "khách này dùng bao nhiêu" và email của khách.
+ */
+async function linkCloudAccountToGoogle(): Promise<void> {
+  try {
+    const idToken = await getGoogleIdToken();
+    if (!idToken) return;
+    const base = await apiBase();
+    await fetch(`${base}/api/backups/link`, {
+      method: 'POST',
+      headers: { ...(await authHeaders()), 'X-Google-Id-Token': idToken },
+    });
+  } catch {
+    // Nối thất bại không được làm hỏng sao lưu — lần sao lưu sau thử lại.
+  }
 }
 
 function fileNameForNow(): string {
@@ -128,6 +150,7 @@ export async function uploadCloudBackup(password: string): Promise<{
     tier_mb: number;
     files: CloudBackupFile[];
   };
+  void linkCloudAccountToGoogle();
   return { name: data.name, size: data.size, tier_mb: data.tier_mb, files: data.files ?? [] };
 }
 
@@ -142,6 +165,7 @@ export async function listCloudBackups(): Promise<{ tier_mb: number; files: Clou
   }
   if (!res.ok) throw toCloudError(res, await readErrorBody(res));
   const data = (await res.json()) as { tier_mb: number; files: CloudBackupFile[] };
+  void linkCloudAccountToGoogle();
   return { tier_mb: data.tier_mb, files: data.files ?? [] };
 }
 

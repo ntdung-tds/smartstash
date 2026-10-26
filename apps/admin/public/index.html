@@ -393,6 +393,23 @@
           <h3>Danh sách người dùng</h3>
           <div id="userList" class="list"></div>
         </div>
+        <div class="card" id="loginLogWrap">
+          <h3>Lịch sử đăng nhập quản trị</h3>
+          <p class="hint">Chỉ quản trị mới xem được (có địa chỉ IP). Bảng tổng hợp: số lần đăng nhập thành công / thất bại và lần gần nhất theo từng người; bên dưới là từng lượt đăng nhập (IP, trình duyệt, thành công/thất bại).</p>
+          <div class="filters">
+            <input id="loginLogEmail" type="text" placeholder="Lọc theo email" autocomplete="off">
+            <select id="loginLogResult">
+              <option value="">Mọi kết quả</option>
+              <option value="1">Thành công</option>
+              <option value="0">Thất bại</option>
+            </select>
+            <button id="loginLogSearchBtn" type="button">Tra cứu</button>
+          </div>
+          <div id="loginLogSummary"></div>
+          <div id="loginLogList"></div>
+          <div id="loginLogPager" class="pager"></div>
+          <p id="loginLogMsg" class="status"></p>
+        </div>
       </section>
 
       <!-- Cài đặt -->

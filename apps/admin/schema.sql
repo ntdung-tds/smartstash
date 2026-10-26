@@ -105,9 +105,11 @@ CREATE TABLE IF NOT EXISTS backup_accounts (
   account_id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL,
   tier_mb    INTEGER NOT NULL DEFAULT 100 CHECK (tier_mb IN (100, 200, 500, 1000)),
+  app_account_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_backup_accounts_app ON backup_accounts(app_account_id);
 
 -- 8. Tài khoản quản trị viên (đăng nhập trang quản trị — thay mã ADMIN_TOKEN chung).
 --    Mỗi người một tài khoản riêng; mật khẩu KHÔNG lưu dạng gốc, chỉ lưu hash
@@ -185,3 +187,18 @@ CREATE TABLE IF NOT EXISTS config_history (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_config_history_created ON config_history(created_at);
+
+-- 13. Nối tài khoản sao lưu với tài khoản app + nhật ký đăng nhập quản
+--     trị (26/10/2026, xem migration 20261026-account-link-and-login-logs.sql).
+CREATE TABLE IF NOT EXISTS admin_login_logs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    TEXT,
+  email      TEXT NOT NULL,
+  success    INTEGER NOT NULL DEFAULT 0 CHECK (success IN (0, 1)),
+  ip         TEXT,
+  user_agent TEXT,
+  reason     TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_login_logs_email ON admin_login_logs(email);
+CREATE INDEX IF NOT EXISTS idx_login_logs_created ON admin_login_logs(created_at);

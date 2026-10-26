@@ -11,6 +11,37 @@ import {
   MIN_PASSWORD_LEN,
 } from '../lib/adminAuth.js';
 
+// Nhật ký đăng nhập quản trị (bảng admin_login_logs, xem thêm route
+// GET /api/admin/login-logs ở routes/admin.js).
+// - Ghi cả thành công lẫn sai mật khẩu (không phân biệt "không có tài
+//   khoản" với "sai mật khẩu" trong reason để log cũng không lộ).
+// - IP lấy từ CF-Connecting-IP (Cloudflare đặt) rồi mới tới
+//   X-Forwarded-For; IP là dữ liệu cá nhân nên route xem log chỉ dành
+//   cho admin, không cho viewer/staff.
+// - Lỗi ghi log không được làm hỏng đăng nhập (bảng có thể chưa có ở
+//   DB tạo trước migration) nên luôn try/catch.
+// - Không ghi khi bị chặn bởi giới hạn tốc độ: bộ đếm chống dò đã chặn
+//   rồi, ghi nữa thì một đợt dò sẽ làm đầy bảng.
+function clientIp(request) {
+  const cf = (request.headers.get('CF-Connecting-IP') || '').trim();
+  if (cf) return cf;
+  const fwd = (request.headers.get('X-Forwarded-For') || '').trim();
+  if (fwd) return fwd.split(',')[0].trim();
+  return null;
+}
+async function logLogin(env, request, email, userId, success, reason) {
+  try {
+    const ua = (request.headers.get('User-Agent') || '').slice(0, 300) || null;
+    await env.DB.prepare(
+      `INSERT INTO admin_login_logs
+         (user_id, email, success, ip, user_agent, reason)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(userId, email, success ? 1 : 0, clientIp(request), ua, reason).run();
+  } catch (e) {
+    console.error('admin_login_logs insert failed:', e && e.message ? e.message : e);
+  }
+}
+
 // GET /api/auth/status — công khai. Chỉ trả hasUsers (có tài khoản nào chưa)
 // để PWA biết nên hiện màn tạo tài khoản đầu tiên hay màn đăng nhập.
 export async function status(env) {
@@ -62,11 +93,18 @@ export async function login(request, env) {
   }
   const user = await env.DB.prepare('SELECT * FROM admin_users WHERE email = ?').bind(email).first();
   const WRONG = err('unauthorized', 'Email hoặc mật khẩu không đúng.', 401);
-  if (!user || user.active !== 1) return WRONG;
-  if (!(await verifyPassword(password, user.password_hash))) return WRONG;
+  if (!user || user.active !== 1) {
+    await logLogin(env, request, email, user ? user.id : null, false, 'invalid_credentials');
+    return WRONG;
+  }
+  if (!(await verifyPassword(password, user.password_hash))) {
+    await logLogin(env, request, email, user.id, false, 'invalid_credentials');
+    return WRONG;
+  }
   const session = await createSession(env, user.id);
   await env.DB.prepare('UPDATE admin_users SET last_login_at = ? WHERE id = ?').bind(nowIso(), user.id).run();
   await audit(env, email, 'admin_login', email, null);
+  await logLogin(env, request, email, user.id, true, null);
   return json({ ok: true, token: session.token, expires_at: session.expires_at, user: { email: user.email, role: user.role } });
 }
 

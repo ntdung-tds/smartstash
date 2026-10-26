@@ -161,9 +161,16 @@
     },
     backupAccountList: {
       text: 'Tìm tài khoản…',
-      selects: [{ label: 'Gói', get: function (el) {
-          return el.dataset.tier ? el.dataset.tier + ' MB' : '';
-        }, dynamic: true }],
+      selects: [
+        { label: 'Gói', get: function (el) {
+            return el.dataset.tier ? el.dataset.tier + ' MB' : '';
+          }, dynamic: true },
+        { label: 'Dung lượng', get: function (el) {
+            var p = parseFloat(el.dataset.usedPct || '0');
+            return p >= 95 ? 'full' : p >= 80 ? 'warn' : '';
+          },
+          options: [['', 'Tất cả'], ['warn', 'Sắp đầy (80–95%)'], ['full', 'Gần hết (≥95%)']] },
+      ],
     },
     userList: {
       text: 'Tìm email…',
@@ -569,7 +576,7 @@
     loadBackups();
     loadBackupAccounts();
     loadAuditFull();
-    if (isAdmin()) loadUsers();
+    if (isAdmin()) { loadUsers(); loadLoginLogs(); }
   }
 
   // --- Kết nối ---
@@ -1024,7 +1031,7 @@
       var d = await api('/api/admin/accounts?limit=100&offset=' + appAccountOffset +
         (plan ? '&plan=' + plan : ''));
       box.innerHTML = tableHTML(
-        ['Tài khoản', 'Gói', 'Email', 'Tặng tới', 'Trả phí tới', 'Cập nhật', 'Khoá', 'Thao tác'],
+        ['Tài khoản', 'Gói', 'Dung lượng sao lưu', 'Email', 'Tặng tới', 'Trả phí tới', 'Cập nhật', 'Khoá', 'Thao tác'],
         d.accounts.map(function (a) {
           var actions = '';
           if (isAdmin()) {
@@ -1033,7 +1040,18 @@
               : '<button type="button" class="secondary small acct-block" data-id="' + esc(a.revenuecat_app_user_id) + '">Khoá</button> ';
             actions += '<button type="button" class="secondary small acct-delete" data-id="' + esc(a.revenuecat_app_user_id) + '">Xoá</button>';
           }
+          // Dung lượng nối từ tài khoản sao lưu (cần app mới gửi liên
+          // kết; chưa nối thì hiện "Chưa nối" thay vì bịa số 0).
+          // Ngưỡng cảnh báo khớp cách máy chủ tính hạn mức (MB = 10^6).
+          var usage = 'Chưa nối';
+          if (a.backup_account_id) {
+            var pct = a.backup_tier_mb ? (a.backup_bytes / (a.backup_tier_mb * 1000000)) * 100 : 0;
+            usage = (a.backup_bytes / 1048576).toFixed(1) + ' / ' + a.backup_tier_mb + ' MB' +
+              (pct >= 95 ? ' · Gần hết (' + pct.toFixed(0) + '%)' :
+                pct >= 80 ? ' · Sắp đầy (' + pct.toFixed(0) + '%)' : '');
+          }
           return [esc(a.revenuecat_app_user_id), esc(PLAN_LABELS[a.plan_status] || a.plan_status),
+            usage,
             esc(a.email || '—'), esc(a.promo_until ? fmtDate(a.promo_until) : '—'),
             esc(a.paid_until ? fmtDate(a.paid_until) : '—'), esc(fmtDate(a.updated_at)),
             a.blocked ? 'ĐÃ KHOÁ' + (a.blocked_reason ? ' (' + esc(a.blocked_reason) + ')' : '') : '—',
@@ -1102,7 +1120,11 @@
         (a.promo_until ? ' · Tặng tới: ' + fmtDate(a.promo_until) : '') +
         (a.paid_until ? ' · Trả phí tới: ' + fmtDate(a.paid_until) : '') +
         ' · Tạo: ' + fmtDate(a.created_at) + ' · Cập nhật: ' + fmtDate(a.updated_at) +
-        (a.blocked ? ' · ĐÃ KHOÁ' + (a.blocked_reason ? ' (' + esc(a.blocked_reason) + ')' : '') : '') + '</div>' +
+        (a.blocked ? ' · ĐÃ KHOÁ' + (a.blocked_reason ? ' (' + esc(a.blocked_reason) + ')' : '') : '') +
+        (a.backup
+          ? ' · Sao lưu: ' + (a.backup.backup_bytes / 1048576).toFixed(1) + ' / ' + a.backup.backup_tier_mb +
+            ' MB (' + a.backup.backup_files + ' file)'
+          : ' · Sao lưu: chưa nối tài khoản sao lưu') + '</div>' +
         '<div class="actions">' +
         (isAdmin()
           ? '<button type="button" class="secondary goto-grant" data-mode="grant">Cấp quyền lợi</button>' +
@@ -1395,10 +1417,20 @@
               return '<option value="' + p.size_mb + '"' + (a.tier_mb === p.size_mb ? ' selected' : '') + '>' +
                 esc(planLabel(p)) + '</option>';
             }).join('');
-            return '<div class="row" data-id="' + esc(a.account_id) + '" data-tier="' + a.tier_mb + '">' +
+            // Cảnh báo dung lượng theo đúng hạn mức máy chủ (MB = 10^6):
+            // >= 80% "Sắp đầy", >= 95% "Gần hết". data-used-pct phục vụ
+            // select lọc "Sắp đầy / Gần hết" của bảng này.
+            var pct = a.tier_mb ? (a.bytes / (a.tier_mb * 1000000)) * 100 : 0;
+            var warn = pct >= 95 ? ' · Gần hết (' + pct.toFixed(0) + '%)' :
+              pct >= 80 ? ' · Sắp đầy (' + pct.toFixed(0) + '%)' : '';
+            return '<div class="row" data-id="' + esc(a.account_id) + '" data-tier="' + a.tier_mb + '"' +
+              ' data-used-pct="' + pct.toFixed(1) + '">' +
               '<div class="title">' + esc(a.account_id) + '</div>' +
-              '<div class="meta">Đã dùng: ' + usedMB + ' / ' + a.tier_mb + ' MB' +
+              '<div class="meta">Đã dùng: ' + usedMB + ' / ' + a.tier_mb + ' MB' + warn +
               ' · Số file: ' + a.files +
+              (a.owner_email
+                ? ' · Chủ: ' + esc(a.owner_email) + ' (' + esc(PLAN_LABELS[a.owner_plan] || a.owner_plan || '') + ')'
+                : ' · Chưa nối tài khoản app') +
               ' · Cập nhật: ' + fmtDate(a.updated_at) + '</div>' +
               '<div class="actions">' +
               '<button type="button" class="secondary view-files">Xem file</button> ' +
@@ -1510,7 +1542,46 @@
       });
     } catch (e) { box.innerHTML = '<p class="status bad">Lỗi: ' + esc(e.message) + '</p>'; }
   }
-  $('reloadUsers').addEventListener('click', loadUsers);
+  $('reloadUsers').addEventListener('click', function () { loadUsers(); loadLoginLogs(); });
+
+  // Lịch sử đăng nhập quản trị (chỉ admin — có IP nên server chặn
+  // viewer/staff). Tổng hợp theo email + từng lượt, có phân trang.
+  var loginLogOffset = 0;
+  async function loadLoginLogs() {
+    var wrap = $('loginLogWrap');
+    if (!wrap) return;
+    if (!isAdmin()) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    var box = $('loginLogList');
+    box.innerHTML = '<p>Đang tải…</p>';
+    try {
+      var q = new URLSearchParams();
+      if ($('loginLogEmail').value.trim()) q.set('email', $('loginLogEmail').value.trim());
+      if ($('loginLogResult').value) q.set('success', $('loginLogResult').value);
+      q.set('limit', '100');
+      q.set('offset', String(loginLogOffset));
+      var d = await api('/api/admin/login-logs?' + q.toString());
+      $('loginLogSummary').innerHTML = tableHTML(
+        ['Email', 'Thành công', 'Thất bại', 'Gần nhất'],
+        (d.summary || []).map(function (s) {
+          return [esc(s.email), fmtNum(s.ok_count), fmtNum(s.fail_count), esc(fmtDate(s.last_at))];
+        }),
+        'Chưa có lượt đăng nhập nào được ghi (log bắt đầu từ sau lần deploy này).'
+      );
+      box.innerHTML = tableHTML(
+        ['Thời gian', 'Email', 'Kết quả', 'IP', 'Trình duyệt'],
+        (d.logs || []).map(function (l) {
+          return [esc(fmtDate(l.created_at)), esc(l.email), l.success ? 'Thành công' : 'Thất bại',
+            esc(l.ip || '—'), esc((l.user_agent || '—').slice(0, 80))];
+        }),
+        'Không tìm thấy lượt đăng nhập nào khớp điều kiện.'
+      );
+      renderPager('loginLogPager', d.total, d.offset, d.limit, function (next) {
+        loginLogOffset = next; loadLoginLogs();
+      });
+    } catch (e) { box.innerHTML = '<p class="status bad">Lỗi: ' + esc(e.message) + '</p>'; }
+  }
+  $('loginLogSearchBtn').addEventListener('click', function () { loginLogOffset = 0; loadLoginLogs(); });
 
   $('createUserForm').addEventListener('submit', async function (ev) {
     ev.preventDefault();

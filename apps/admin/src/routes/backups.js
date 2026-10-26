@@ -22,6 +22,7 @@
 import { json, err, readJson, nowIso } from '../lib/http.js';
 import { timingSafeEqual } from '../lib/auth.js';
 import { getStorageAdapter } from '../lib/storage.js';
+import { verifyGoogleIdToken, googleAnchor } from '../lib/googleAuth.js';
 
 export const STORAGE_TIERS_MB = [100, 200, 500, 1000];
 export const MAX_VERSIONS = 2;
@@ -261,6 +262,53 @@ export async function usageAccount(request, env) {
     used_bytes: used,
     files: files.map((f) => ({ name: f.file_name, size: f.size_bytes, updatedAt: f.updated_at })),
   });
+}
+
+// POST /api/backups/link — app nối tài khoản sao lưu với tài khoản app.
+// Xác thực kép: (1) TOFU của tài khoản sao lưu (X-Account-Id + Bearer
+// token, như mọi route sao lưu) và (2) Google ID token của tài khoản
+// Google đang đăng nhập trong app (header X-Google-Id-Token, Worker tự
+// kiểm tra với Google). Ghi app_account_id (anchor google:<sub>) vào
+// backup_accounts để trang quản trị thấy "khách này dùng bao nhiêu".
+// - Gọi lại nhiều lần với cùng tài khoản Google thì không đổi gì (luỹ đẳng).
+// - Tài khoản sao lưu đã nối với tài khoản Google KHÁC thì từ chối 409 —
+//   không cho chiếm tài khoản sao lưu của người khác, và app phải bỏ qua
+//   lỗi này trong im lặng (không chặn sao lưu).
+// - Đồng thời lưu email vào app_accounts (tạo dòng nếu chưa có, chỉ ghi
+//   email — không đụng plan_status) để bảng tài khoản app hiện email
+//   ngay cả với khách chưa từng đổi mã.
+// App gọi fire-and-forget sau mỗi lần sao lưu thành công; lỗi nối không
+// được làm hỏng sao lưu.
+export async function linkAccount(request, env) {
+  const auth = await authenticate(env, request);
+  if (auth.error) return auth.error;
+  const idToken = (request.headers.get('X-Google-Id-Token') || '').trim();
+  const verified = await verifyGoogleIdToken(idToken);
+  if (!verified.ok) {
+    return err('invalid_token', 'Phiên đăng nhập Google không hợp lệ — hãy đăng nhập lại.', 401);
+  }
+  const anchor = googleAnchor(verified.sub);
+  const row = await env.DB.prepare(
+    'SELECT app_account_id FROM backup_accounts WHERE account_id = ?'
+  ).bind(auth.account_id).first();
+  if (!row) return err('not_found', 'Không tìm thấy tài khoản sao lưu.', 404);
+  if (row.app_account_id && row.app_account_id !== anchor) {
+    return err('already_linked', 'Tài khoản sao lưu này đã nối với tài khoản Google khác.', 409);
+  }
+  const now = nowIso();
+  await env.DB.prepare(
+    'UPDATE backup_accounts SET app_account_id = ?, updated_at = ? WHERE account_id = ?'
+  ).bind(anchor, now, auth.account_id).run();
+  if (verified.email) {
+    await env.DB.prepare(
+      `INSERT INTO app_accounts (revenuecat_app_user_id, email, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(revenuecat_app_user_id) DO UPDATE SET
+         email = COALESCE(excluded.email, app_accounts.email),
+         updated_at = excluded.updated_at`
+    ).bind(anchor, verified.email, now).run();
+  }
+  return json({ ok: true, account_id: auth.account_id, app_account_id: anchor });
 }
 
 // POST /api/backups/tier { tier_mb } — app (xác thực tài khoản).

@@ -86,6 +86,17 @@ export async function getAccountDetail(env, idOrEmail) {
   ).bind(account.revenuecat_app_user_id).first();
   account.blocked = blockedRow ? 1 : 0;
   account.blocked_reason = blockedRow ? blockedRow.reason : null;
+  const backupRow = await env.DB.prepare(
+    `SELECT ba.account_id AS backup_account_id, ba.tier_mb AS backup_tier_mb,
+            COUNT(bf.id) AS backup_files, COALESCE(SUM(bf.size_bytes), 0) AS backup_bytes
+       FROM backup_accounts ba
+       LEFT JOIN backup_files bf ON bf.account_id = ba.account_id
+      WHERE ba.app_account_id = ?
+      GROUP BY ba.account_id`
+  ).bind(account.revenuecat_app_user_id).all();
+  account.backup = (backupRow.results || []).length
+    ? backupRow.results[0]
+    : null;
   const { results } = await env.DB.prepare(
     'SELECT * FROM redemptions WHERE account_id = ? ORDER BY redeemed_at DESC LIMIT 50'
   ).bind(account.revenuecat_app_user_id).all();
@@ -118,6 +129,43 @@ export async function getSystemHealth(env) {
     }
   } catch { /* giữ false */ }
   return json({ ok: true, checks, time: new Date().toISOString() });
+}
+
+// GET /api/admin/login-logs?limit=&offset=&email=&success= — lịch sử
+// đăng nhập quản trị (chỉ admin, vì có IP). Trả kèm bảng tổng hợp theo
+// từng email: số lần thành công / thất bại / lần gần nhất — chính là
+// "số lần đăng nhập" mà bảng người dùng trước đây không có.
+export async function listLoginLogs(env, url) {
+  let limit = parseInt(url.searchParams.get('limit') || '100', 10);
+  if (!Number.isInteger(limit) || limit < 1) limit = 100;
+  if (limit > 200) limit = 200;
+  let offset = parseInt(url.searchParams.get('offset') || '0', 10);
+  if (!Number.isInteger(offset) || offset < 0) offset = 0;
+  const email = (url.searchParams.get('email') || '').trim();
+  const success = (url.searchParams.get('success') || '').trim();
+  const where = [];
+  const params = [];
+  if (email) { where.push('email LIKE ?'); params.push('%' + email + '%'); }
+  if (success === '1' || success === '0') { where.push('success = ?'); params.push(Number(success)); }
+  const whereSql = where.length ? ' WHERE ' + where.join(' AND ') : '';
+  const total = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM admin_login_logs' + whereSql
+  ).bind(...params).first();
+  const { results } = await env.DB.prepare(
+    `SELECT id, user_id, email, success, ip, user_agent, reason, created_at
+       FROM admin_login_logs${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`
+  ).bind(...params, limit, offset).all();
+  const summary = await env.DB.prepare(
+    `SELECT email,
+            SUM(success) AS ok_count,
+            SUM(1 - success) AS fail_count,
+            MAX(created_at) AS last_at
+       FROM admin_login_logs GROUP BY email ORDER BY last_at DESC`
+  ).all();
+  return json({
+    ok: true, logs: results || [], summary: summary.results || [],
+    total: total?.n || 0, offset, limit,
+  });
 }
 
 // GET /api/admin/revenue — doanh thu theo thời gian từ revenue_events.
@@ -200,12 +248,22 @@ export async function listAppAccounts(env, url) {
   if (!Number.isInteger(offset) || offset < 0) offset = 0;
   const plan = (url.searchParams.get('plan') || '').trim();
   const validPlans = ['free', 'pro_paid', 'pro_promo', 'pro'];
+  // Dung lượng sao lưu của từng tài khoản app: nối qua
+  // backup_accounts.app_account_id rồi cộng dồn backup_files. Tài khoản
+  // chưa nối thì các cột backup_* là 0/null — PWA hiện "Chưa nối".
   const select = `SELECT a.revenuecat_app_user_id, a.email, a.plan_status, a.paid_until,
             a.promo_until, a.updated_at,
             CASE WHEN b.account_id IS NOT NULL THEN 1 ELSE 0 END AS blocked,
-            b.reason AS blocked_reason
+            MAX(b.reason) AS blocked_reason,
+            MAX(ba.account_id) AS backup_account_id,
+            MAX(ba.tier_mb) AS backup_tier_mb,
+            COALESCE(SUM(bf.size_bytes), 0) AS backup_bytes,
+            COUNT(bf.id) AS backup_files
        FROM app_accounts a LEFT JOIN blocked_accounts b
-         ON b.account_id = a.revenuecat_app_user_id`;
+         ON b.account_id = a.revenuecat_app_user_id
+       LEFT JOIN backup_accounts ba
+         ON ba.app_account_id = a.revenuecat_app_user_id
+       LEFT JOIN backup_files bf ON bf.account_id = ba.account_id`;
   let rows;
   let total;
   if (plan && validPlans.includes(plan)) {
@@ -213,12 +271,12 @@ export async function listAppAccounts(env, url) {
       'SELECT COUNT(*) AS n FROM app_accounts WHERE plan_status = ?'
     ).bind(plan).first();
     rows = await env.DB.prepare(
-      select + ' WHERE a.plan_status = ? ORDER BY a.updated_at DESC LIMIT ? OFFSET ?'
+      select + ' WHERE a.plan_status = ? GROUP BY a.revenuecat_app_user_id ORDER BY a.updated_at DESC LIMIT ? OFFSET ?'
     ).bind(plan, limit, offset).all();
   } else {
     total = await env.DB.prepare('SELECT COUNT(*) AS n FROM app_accounts').first();
     rows = await env.DB.prepare(
-      select + ' ORDER BY a.updated_at DESC LIMIT ? OFFSET ?'
+      select + ' GROUP BY a.revenuecat_app_user_id ORDER BY a.updated_at DESC LIMIT ? OFFSET ?'
     ).bind(limit, offset).all();
   }
   return json({ ok: true, accounts: rows.results || [], total: total?.n || 0, offset, limit });
@@ -302,9 +360,11 @@ export async function listBackupAccountFiles(env, accountId) {
 export async function listBackupAccounts(env) {
   const { results } = await env.DB.prepare(
     `SELECT ba.account_id, ba.tier_mb, ba.created_at, ba.updated_at,
+            ba.app_account_id, a.email AS owner_email, a.plan_status AS owner_plan,
             COUNT(bf.id) AS files, COALESCE(SUM(bf.size_bytes), 0) AS bytes
        FROM backup_accounts ba
        LEFT JOIN backup_files bf ON bf.account_id = ba.account_id
+       LEFT JOIN app_accounts a ON a.revenuecat_app_user_id = ba.app_account_id
       GROUP BY ba.account_id
       ORDER BY ba.updated_at DESC`
   ).all();

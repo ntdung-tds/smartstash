@@ -110,6 +110,8 @@ export default {
         response = await backupRoutes.usageAccount(request, env);
       } else if (path === '/api/backups/tier' && method === 'POST') {
         response = await backupRoutes.setTier(request, env);
+      } else if (path === '/api/backups/link' && method === 'POST') {
+        response = await backupRoutes.linkAccount(request, env);
       } else if (!path.startsWith('/api/')) {
         response = err('not_found', 'Không tìm thấy route.', 404);
       } else {
@@ -163,6 +165,8 @@ export default {
             response = need('admin') || await userRoutes.resetPassword(request, env, user, decodeURIComponent(seg[3]));
           } else if (path === '/api/admin/health' && method === 'GET') {
             response = await adminRoutes.getSystemHealth(env);
+          } else if (path === '/api/admin/login-logs' && method === 'GET') {
+            response = need('admin') || await adminRoutes.listLoginLogs(env, url);
           } else if (path === '/api/admin/config/history' && method === 'GET') {
             response = await configRoutes.getHistory(env);
           } else if (path === '/api/admin/config/restore' && method === 'POST') {

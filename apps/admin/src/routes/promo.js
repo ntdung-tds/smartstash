@@ -380,12 +380,13 @@ export async function redeem(request, env) {
       })),
       env.DB.prepare(
         `INSERT INTO app_accounts
-           (revenuecat_app_user_id, plan_status, promo_until, updated_at)
-         VALUES (?, 'pro_promo', ?, ?)
+           (revenuecat_app_user_id, plan_status, promo_until, email, updated_at)
+         VALUES (?, 'pro_promo', ?, ?, ?)
          ON CONFLICT(revenuecat_app_user_id) DO UPDATE SET
            plan_status = 'pro_promo', promo_until = excluded.promo_until,
+           email = COALESCE(excluded.email, app_accounts.email),
            updated_at = excluded.updated_at`
-      ).bind(accountId, expiresAt, now),
+      ).bind(accountId, expiresAt, verified.email, now),
     ]);
   } catch {
     await rollbackClaim();
@@ -437,6 +438,16 @@ export async function getPromoStatus(request, env) {
     'SELECT * FROM app_accounts WHERE revenuecat_app_user_id = ?'
   ).bind(anchor).first();
   const now = nowIso();
+  // Lưu email từ token Google (nếu có) để bảng tài khoản app hiện được
+  // email thật — trước đây token trả email nhưng Worker bỏ qua nên cột
+  // email luôn trống. Chỉ cập nhật khi dòng tài khoản đã tồn tại (kiểm
+  // tra gói không tự tạo tài khoản mới).
+  if (account && verified.email && account.email !== verified.email) {
+    await env.DB.prepare(
+      'UPDATE app_accounts SET email = ?, updated_at = ? WHERE revenuecat_app_user_id = ?'
+    ).bind(verified.email, now, anchor).run();
+    account.email = verified.email;
+  }
   if (account) {
     if (account.plan_status === 'pro_paid' &&
         (!account.paid_until || account.paid_until > now)) {
