@@ -1070,8 +1070,9 @@ export default function HomeScreen() {
       />
       {/* Nút THU GỌN (Mẫu C4 — người dùng chốt 26/10/2026, thu nhỏ ở v95
           vì bản 54dp nhìn to quá; mẫu T3 tím đậm ở v96 bị bỏ ở v97):
-          nút tròn nổi 44dp ở mép phải (right 14 — về lại sát mép như
-          v94/v95), neo khoảng giữa vùng danh sách (top 38% — đủ cao
+          nút tròn nổi 40dp ở mép phải (right 14 — về lại sát mép như
+          v94/v95; thu từ 44 xuống 40 ở v98 vì vẫn hơi to), neo
+          khoảng giữa vùng danh sách (top 38% — đủ cao
           để khi cuộn tới đáy không đè banner chân trang chứa cặp nút
           Thêm mới/Lên đầu trang ở cuối nội dung). Chỉ icon, không chữ:
           nền gradient dọc tím -> san hô như mẫu C4 gốc,
@@ -1085,7 +1086,7 @@ export default function HomeScreen() {
           accessibilityLabel={t('home.showLess')}
           style={{
             position: 'absolute', right: 14, top: '38%', zIndex: 10,
-            width: 44, height: 44, borderRadius: 22, overflow: 'hidden',
+            width: 40, height: 40, borderRadius: 20, overflow: 'hidden',
             borderWidth: 2, borderColor: '#fff',
             shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 },
             shadowOpacity: 0.35, shadowRadius: 10, elevation: 8,
@@ -1097,7 +1098,7 @@ export default function HomeScreen() {
             end={{ x: 0, y: 1 }}
             style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
           >
-            <Ionicons name="chevron-up-outline" size={20} color="#fff" />
+            <Ionicons name="chevron-up-outline" size={18} color="#fff" />
           </LinearGradient>
         </TouchableOpacity>
       )}
