@@ -2335,11 +2335,11 @@ export default function SettingsScreen() {
       </View>
       )}
 
-      {/* v99: footer về lại marginTop 12 như cũ (v98 hiểu sai ý người
-          dùng); thêm marginBottom 24 để khi cuộn tới đáy, dòng footer
-          không chạm nút tròn '+' Thêm đồ ở giữa thanh tab dưới. */}
+      {/* v100: footer marginBottom 24 -> 14 theo yêu cầu người dùng
+          (marginTop vẫn 12 như cũ; marginBottom 14 đủ để dòng footer
+          không chạm nút tròn '+' Thêm đồ ở giữa thanh tab dưới). */}
       {activePanel === null && (
-      <Text style={{ color: Colors.subtext, fontSize: 12, textAlign: 'center', marginTop: 12, marginBottom: 24 }}>
+      <Text style={{ color: Colors.subtext, fontSize: 12, textAlign: 'center', marginTop: 12, marginBottom: 14 }}>
         {t('set.footer', { v: appVersion ?? '0.1.0' })}
       </Text>
       )}
