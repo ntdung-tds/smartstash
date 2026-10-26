@@ -14,6 +14,7 @@ import {
   getDescendantLocationIds, moveLocation, renameLocation, setLocationIcon, softDeleteLocation, createLocation,
   setLocationCoords, clearLocationCoords,
   listMediaForOwner, softDeleteMedia, setPrimaryMedia,
+  countItemsInLocations, softDeleteLocationTree, deleteLocationWithMove,
 } from '@/db/queries';
 import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
 import { getCurrentLimits } from '@/services/planService';
@@ -46,6 +47,11 @@ export default function LocationDetailScreen() {
   const [latText, setLatText] = useState('');
   const [lngText, setLngText] = useState('');
   const [showDeletePopup, setShowDeletePopup] = useState(false);
+  const [showDeleteChoice, setShowDeleteChoice] = useState(false);
+  const [showDestPicker, setShowDestPicker] = useState(false);
+  // Cây con đang hoạt động + tổng đồ trong cây (phục vụ popup xoá vị trí còn đồ)
+  const [subtreeIds, setSubtreeIds] = useState<string[]>([]);
+  const [subtreeItemCount, setSubtreeItemCount] = useState(0);
   const [showClearCoordsPopup, setShowClearCoordsPopup] = useState(false);
   // Popup thông báo/lỗi dùng chung (1 nút "Đã hiểu") thay hộp thoại hệ thống
   const [infoPopup, setInfoPopup] = useState<{ title: string; message?: string } | null>(null);
@@ -65,6 +71,9 @@ export default function LocationDetailScreen() {
     const all = await listLocations();
     setAllLocations(all);
     setChildren(all.filter((c) => c.parent_id === l.id));
+    const sub = await getDescendantLocationIds(l.id);
+    setSubtreeIds(sub);
+    setSubtreeItemCount(await countItemsInLocations(sub));
     const tMap: Record<string, string | null> = {};
     const cMap: Record<string, string> = {};
     for (const it of its) {
@@ -95,17 +104,33 @@ export default function LocationDetailScreen() {
   const lng = loc.longitude;
 
   function handleDelete() {
-    const childCount = children.length;
-    if (childCount > 0 || items.length > 0) {
-      showInfo(t('ld.cantDeleteTitle'), t('ld.cantDeleteMsg'));
+    // Vị trí trống: giữ nguyên luồng cũ (hỏi xác nhận rồi xoá mềm).
+    // Vị trí còn đồ/vị trí con (v93): không chặn nữa mà mở popup chọn
+    // "Xoá tất cả" hoặc "Chuyển đồ rồi xoá vị trí".
+    if (children.length === 0 && items.length === 0) {
+      setShowDeletePopup(true);
       return;
     }
-    setShowDeletePopup(true);
+    setShowDeleteChoice(true);
   }
 
   /** Xác nhận ở AppPopup xoá vị trí */
   async function handleDeleteConfirm() {
     await softDeleteLocation(loc!.id);
+    bump();
+    router.back();
+  }
+
+  /** Xoá tất cả: vị trí + cây con + đồ trong cây đều vào thùng rác */
+  async function handleDeleteAllConfirm() {
+    await softDeleteLocationTree(loc!.id);
+    bump();
+    router.back();
+  }
+
+  /** Chuyển đồ rồi xoá: đồ trực tiếp chuyển sang vị trí đích đã chọn */
+  async function handleMoveDeleteConfirm(dest: Location) {
+    await deleteLocationWithMove(loc!.id, dest.id);
     bump();
     router.back();
   }
@@ -498,6 +523,27 @@ export default function LocationDetailScreen() {
         message={t('ld.deleteMsg', { name: loc.name })}
         confirm={{ label: t('ld.delete'), danger: true, onConfirm: () => { handleDeleteConfirm().catch(() => {}); } }}
         onClose={() => setShowDeletePopup(false)}
+      />
+
+      <AppPopup
+        visible={showDeleteChoice}
+        title={t('ld.deleteChoiceTitle')}
+        message={t('ld.deleteChoiceMsg', { name: loc.name, children: children.length, direct: items.length, total: subtreeItemCount })}
+        notice={t('ld.deleteChoiceNotice')}
+        options={[
+          { label: t('ld.deleteAll'), description: t('ld.deleteAllDesc'), icon: 'trash-outline', color: Colors.danger, onPress: () => { handleDeleteAllConfirm().catch(() => {}); } },
+          { label: t('ld.moveThenDelete'), description: t('ld.moveThenDeleteDesc'), icon: 'swap-horizontal-outline', color: Colors.primary, onPress: () => setShowDestPicker(true) },
+        ]}
+        onClose={() => setShowDeleteChoice(false)}
+      />
+
+      <LocationPickerModal
+        visible={showDestPicker}
+        locations={allLocations.filter((l) => !subtreeIds.includes(l.id))}
+        title={t('ld.pickDestTitle')}
+        excludeId={loc.id}
+        onClose={() => setShowDestPicker(false)}
+        onSelect={(dest) => { handleMoveDeleteConfirm(dest).catch(() => {}); }}
       />
 
       <AppPopup

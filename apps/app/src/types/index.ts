@@ -64,6 +64,14 @@ export interface Location {
   is_deleted: number;
   is_dirty: number;
   deleted_at: string | null;
+  /**
+   * Thông tin đợt xoá vị trí (v93, JSON text, chỉ có ở vị trí đang nằm
+   * trong thùng rác): { mode: 'move', dest_id, moved_item_ids } khi xoá
+   * kiểu chuyển đồ; null = xoá kiểu "xoá tất cả" (nhóm nhận diện bằng
+   * deleted_at chung) hoặc vị trí xoá từ bản cũ (khi đó đợt xoá chỉ có
+   * chính vị trí này vì trước v93 vị trí còn đồ không xoá được).
+   */
+  trash_meta?: string | null;
 }
 
 export interface Item {

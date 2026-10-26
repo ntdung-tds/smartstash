@@ -44,6 +44,8 @@ export async function initDb(): Promise<void> {
   await ensureColumn(database, 'loans', 'expected_price', 'REAL');
   await ensureColumn(database, 'locations', 'icon', 'TEXT');
   await ensureColumn(database, 'locations', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
+  // v93: ghi lại đợt xoá vị trí kiểu chuyển đồ để khôi phục được đồ về
+  await ensureColumn(database, 'locations', 'trash_meta', 'TEXT');
   // Ghim theo từng ảnh hiện trường: pin_x/pin_y nằm trên chính hàng media_files
   // của tấm ảnh đó (trước đây là 1 ghim duy nhất/món ở items.pin_x/pin_y)
   await ensureColumn(database, 'media_files', 'pin_x', 'REAL');

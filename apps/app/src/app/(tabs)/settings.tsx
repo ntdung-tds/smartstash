@@ -7,10 +7,11 @@ import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import { styles, Colors, SectionTitle, AppButton, AppPopup, TAB_BAR_CLEARANCE, type AppPopupOption } from '@/components/ui';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
-import type { Item } from '@/types';
+import type { Item, Location } from '@/types';
 import {
   countRealActiveItems, countRealLocations, listItems, listDeletedItems, restoreItem, permanentDeleteItems, getBreadcrumb, breadcrumbText,
   findItemByBarcode, findLocationByQrCode,
+  getDeletedLocations, countDeletedInSubtree, restoreLocation, permanentDeleteLocation, getLocation,
 } from '@/db/queries';
 import { ftsAvailable, kvGet, kvSet } from '@/db/client';
 import { useAppStore } from '@/store/useAppStore';
@@ -252,6 +253,14 @@ export default function SettingsScreen() {
   // Thùng rác: id các món đang chọn + hộp xác nhận xoá vĩnh viễn đang chờ
   const [trashSelected, setTrashSelected] = useState<string[]>([]);
   const [trashDeletePending, setTrashDeletePending] = useState<{ ids: string[]; title: string; message: string } | null>(null);
+  // Thùng rác vị trí (v93): một hàng = một vị trí đã xoá mềm
+  type TrashLocationRow = {
+    id: string; name: string; deletedAt: string | null;
+    mode: 'move' | 'deleteAll'; destName: string | null;
+    movedCount: number; subLocCount: number; subItemCount: number;
+  };
+  const [trashLocations, setTrashLocations] = useState<TrashLocationRow[]>([]);
+  const [locDeletePending, setLocDeletePending] = useState<{ id: string; name: string } | null>(null);
   const [exporting, setExporting] = useState(false);
   const [demoExists, setDemoExists] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
@@ -630,6 +639,61 @@ export default function SettingsScreen() {
     setTrash(list);
     const kept = new Set(list.map((i) => i.id));
     setTrashSelected((prev) => prev.filter((id) => kept.has(id)));
+    await refreshTrashLocations();
+  }
+
+  /** Thùng rác vị trí (v93): kèm thông tin đợt xoá để hiện đúng dòng mô tả */
+  async function refreshTrashLocations() {
+    const deleted: Location[] = await getDeletedLocations();
+    const rows: TrashLocationRow[] = [];
+    for (const loc of deleted) {
+      let mode: 'move' | 'deleteAll' = 'deleteAll';
+      let destName: string | null = null;
+      let movedCount = 0;
+      let subLocCount = 0;
+      let subItemCount = 0;
+      try {
+        const meta = loc.trash_meta ? JSON.parse(loc.trash_meta) as { mode?: string; dest_id?: string; moved_item_ids?: unknown } : null;
+        if (meta && meta.mode === 'move' && typeof meta.dest_id === 'string') {
+          mode = 'move';
+          movedCount = Array.isArray(meta.moved_item_ids) ? meta.moved_item_ids.length : 0;
+          destName = (await getLocation(meta.dest_id))?.name ?? null;
+        }
+      } catch {
+        // meta hỏng: coi như đợt xoá tất cả
+      }
+      if (mode === 'deleteAll') {
+        const c = await countDeletedInSubtree(loc.id, loc.deleted_at);
+        subLocCount = c.locations;
+        subItemCount = c.items;
+      }
+      rows.push({ id: loc.id, name: loc.name, deletedAt: loc.deleted_at, mode, destName, movedCount, subLocCount, subItemCount });
+    }
+    setTrashLocations(rows);
+  }
+
+  async function handleTrashLocRestore(id: string, withItems: boolean) {
+    try {
+      await restoreLocation(id, withItems);
+      bump();
+      await refreshTrash();
+    } catch (e) {
+      if (e instanceof Error && e.message === 'PARENT_TRASHED') {
+        showInfo(t('set.trashLocParentTitle'), t('set.trashLocParentMsg'));
+      } else {
+        showInfo(t('set.trashLocRestoreFailTitle'), e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+
+  async function handleTrashLocDeleteConfirm() {
+    if (!locDeletePending) return;
+    const pending = locDeletePending;
+    setLocDeletePending(null);
+    await permanentDeleteLocation(pending.id);
+    bump();
+    await refreshTrash();
+    showInfo(t('set.trashLocDeleteTitle'), t('set.trashLocDeleted', { name: pending.name }));
   }
 
   function toggleTrashSelect(id: string) {
@@ -2222,6 +2286,52 @@ export default function SettingsScreen() {
             })}
           </>
         )}
+
+        {/* Vị trí đã xoá (v93): khôi phục "vị trí + đồ" hoặc "chỉ vị trí", hoặc xoá vĩnh viễn */}
+        <SectionTitle title={t('set.trashLocTitle')} subtitle={t('set.trashLocSubtitle')} color={Colors.red} />
+        {trashLocations.length === 0 ? (
+          <Text style={{ color: Colors.subtext, fontSize: 13 }}>{t('set.trashLocEmpty')}</Text>
+        ) : (
+          trashLocations.map((row) => (
+            <View key={row.id} style={[styles.card, { gap: 8, padding: 12 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
+                <IOSTile icon="location-outline" color={Colors.subtext} size={42} iconSize={21} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.text }}>{row.name}</Text>
+                  <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>
+                    {row.deletedAt ? row.deletedAt.slice(0, 16).replace('T', ' ') : ''}
+                    {row.mode === 'move'
+                      ? ' · ' + t('set.trashLocMoved', { n: row.movedCount, dest: row.destName ?? t('set.trashLocDestGone') })
+                      : (row.subLocCount > 0 || row.subItemCount > 0
+                        ? ' · ' + t('set.trashLocGroup', { locs: row.subLocCount, items: row.subItemCount })
+                        : '')}
+                  </Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  style={[styles.buttonSecondary, { flex: 1, paddingVertical: 8, alignItems: 'center' }]}
+                  onPress={async () => { await handleTrashLocRestore(row.id, true); }}
+                >
+                  <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('set.trashLocRestoreAll')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.buttonSecondary, { flex: 1, paddingVertical: 8, alignItems: 'center' }]}
+                  onPress={async () => { await handleTrashLocRestore(row.id, false); }}
+                >
+                  <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('set.trashLocRestoreOnly')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{ padding: 6, justifyContent: 'center' }}
+                  hitSlop={6}
+                  onPress={() => setLocDeletePending({ id: row.id, name: row.name })}
+                >
+                  <Ionicons name="trash-outline" size={19} color={Colors.danger} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))
+        )}
       </View>
       )}
 
@@ -2255,6 +2365,17 @@ export default function SettingsScreen() {
         message={trashDeletePending?.message}
         confirm={{ label: t('set.trashDeleteBtn'), danger: true, onConfirm: () => { handleTrashDeleteConfirm().catch(() => {}); } }}
         onClose={() => setTrashDeletePending(null)}
+      />
+
+      {/* Xác nhận xoá vĩnh viễn một vị trí trong thùng rác (v93): đợt xoá
+          tất cả thì xoá hẳn cả đồ/vị trí con cùng đợt; đợt chuyển đồ thì
+          chỉ xoá hàng vị trí vì đồ đang sống ở chỗ khác. */}
+      <AppPopup
+        visible={locDeletePending !== null}
+        title={t('set.trashLocDeleteTitle')}
+        message={t('set.trashLocDeleteConfirm', { name: locDeletePending?.name ?? '' })}
+        confirm={{ label: t('set.trashDeleteBtn'), danger: true, onConfirm: () => { handleTrashLocDeleteConfirm().catch(() => {}); } }}
+        onClose={() => setLocDeletePending(null)}
       />
 
       <AppPopup

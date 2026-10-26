@@ -188,6 +188,218 @@ export async function softDeleteLocation(id: string): Promise<void> {
   );
 }
 
+/** Toàn bộ id trong cây vị trí (gồm chính nó), KỂ CẢ hàng đã xoá mềm — dùng cho khôi phục/xoá vĩnh viễn theo đợt. */
+export async function getSubtreeLocationIdsAll(rootId: string): Promise<string[]> {
+  const rows = await getDb().getAllAsync<{ id: string }>(
+    `WITH RECURSIVE down(id) AS (
+       SELECT id FROM locations WHERE id = ?
+       UNION ALL
+       SELECT l.id FROM locations l JOIN down ON l.parent_id = down.id
+     )
+     SELECT id FROM down`,
+    [rootId],
+  );
+  return rows.map((r) => r.id);
+}
+
+/** Số đồ đang hoạt động trong một tập vị trí (phục vụ đếm đồ cả cây khi xoá). */
+export async function countItemsInLocations(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const row = await getDb().getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM items WHERE location_id IN (${ids.map(() => '?').join(',')}) AND is_deleted = 0`,
+    ids,
+  );
+  return row?.n ?? 0;
+}
+
+/** Vị trí đã xoá mềm (thùng rác vị trí), mới nhất trước. */
+export async function getDeletedLocations(): Promise<Location[]> {
+  return getDb().getAllAsync<Location>(
+    'SELECT * FROM locations WHERE is_deleted = 1 ORDER BY deleted_at DESC',
+  );
+}
+
+/**
+ * Số lượng của một đợt xoá "xoá tất cả": vị trí con + đồ trong cây đang
+ * nằm trong thùng rác với cùng mốc deleted_at của vị trí gốc. Trả về số
+ * vị trí con (không tính gốc) và số đồ.
+ */
+export async function countDeletedInSubtree(rootId: string, deletedAt: string | null): Promise<{ locations: number; items: number }> {
+  if (!deletedAt) return { locations: 0, items: 0 };
+  const ids = await getSubtreeLocationIdsAll(rootId);
+  if (ids.length === 0) return { locations: 0, items: 0 };
+  const ph = ids.map(() => '?').join(',');
+  const locRow = await getDb().getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM locations WHERE id IN (${ph}) AND is_deleted = 1 AND deleted_at = ?`,
+    [...ids, deletedAt],
+  );
+  const itemRow = await getDb().getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM items WHERE location_id IN (${ph}) AND is_deleted = 1 AND deleted_at = ?`,
+    [...ids, deletedAt],
+  );
+  return { locations: Math.max(0, (locRow?.n ?? 0) - 1), items: itemRow?.n ?? 0 };
+}
+
+export interface LocationTrashMeta {
+  mode: 'move';
+  dest_id: string;
+  moved_item_ids: string[];
+}
+
+function parseLocationTrashMeta(raw: string | null | undefined): LocationTrashMeta | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as LocationTrashMeta;
+    if (parsed && parsed.mode === 'move' && typeof parsed.dest_id === 'string' && Array.isArray(parsed.moved_item_ids)) {
+      return parsed;
+    }
+  } catch {
+    // meta hỏng thì coi như đợt xoá tất cả (khôi phục theo deleted_at)
+  }
+  return null;
+}
+
+/**
+ * Xoá tất cả (v93): vị trí + toàn bộ vị trí con đang hoạt động + toàn bộ
+ * đồ trong cây đều vào thùng rác, CHUNG MỘT mốc deleted_at để khôi phục
+ * "vị trí + đồ" nhận diện đúng đợt này (vị trí con xoá lẻ trước đó có
+ * mốc khác nên không bị khôi phục ké theo).
+ */
+export async function softDeleteLocationTree(rootId: string): Promise<void> {
+  const db = getDb();
+  const now = nowISO();
+  const ids = await getDescendantLocationIds(rootId);
+  if (ids.length === 0) return;
+  const ph = ids.map(() => '?').join(',');
+  await db.runAsync(
+    `UPDATE locations SET is_deleted = 1, deleted_at = ?, updated_at = ?, is_dirty = 1, trash_meta = NULL WHERE id IN (${ph})`,
+    [now, now, ...ids],
+  );
+  await db.runAsync(
+    `UPDATE items SET is_deleted = 1, deleted_at = ?, updated_at = ?, is_dirty = 1 WHERE location_id IN (${ph}) AND is_deleted = 0`,
+    [now, now, ...ids],
+  );
+}
+
+/**
+ * Chuyển đồ rồi xoá vị trí (v93): đồ trực tiếp trong vị trí chuyển sang
+ * vị trí đích; vị trí con đang hoạt động chuyển lên làm con của vị trí
+ * cha của vị trí bị xoá (không bị xoá, không chuyển theo đồ); chỉ vị trí
+ * này vào thùng rác kèm meta để khôi phục "vị trí + đồ" chuyển đồ ngược
+ * về được. Trả số đồ đã chuyển.
+ */
+export async function deleteLocationWithMove(rootId: string, destId: string): Promise<number> {
+  const db = getDb();
+  const root = await db.getFirstAsync<Location>('SELECT * FROM locations WHERE id = ? AND is_deleted = 0', [rootId]);
+  if (!root) return 0;
+  const moved = await db.getAllAsync<{ id: string }>(
+    'SELECT id FROM items WHERE location_id = ? AND is_deleted = 0',
+    [rootId],
+  );
+  const movedIds = moved.map((r) => r.id);
+  const now = nowISO();
+  await db.runAsync(
+    'UPDATE items SET location_id = ?, updated_at = ?, is_dirty = 1 WHERE location_id = ? AND is_deleted = 0',
+    [destId, now, rootId],
+  );
+  await db.runAsync(
+    'UPDATE locations SET parent_id = ?, updated_at = ?, is_dirty = 1 WHERE parent_id = ? AND is_deleted = 0',
+    [root.parent_id, now, rootId],
+  );
+  const meta: LocationTrashMeta = { mode: 'move', dest_id: destId, moved_item_ids: movedIds };
+  await db.runAsync(
+    'UPDATE locations SET is_deleted = 1, deleted_at = ?, updated_at = ?, is_dirty = 1, trash_meta = ? WHERE id = ?',
+    [now, now, JSON.stringify(meta), rootId],
+  );
+  return movedIds.length;
+}
+
+/**
+ * Khôi phục vị trí từ thùng rác (v93).
+ * - withItems = false ("chỉ vị trí"): chỉ vị trí về lại, đồ vẫn nằm
+ *   trong thùng rác để khôi phục riêng sau.
+ * - withItems = true ("vị trí + đồ"): đợt chuyển đồ thì chuyển đồ ngược
+ *   về (chỉ món nào vẫn đang ở vị trí đích và chưa bị xoá); đợt xoá tất
+ *   cả thì vị trí con + đồ cùng mốc deleted_at về theo.
+ * Ném lỗi 'PARENT_TRASHED' khi vị trí cha vẫn nằm trong thùng rác (khôi
+ * phục con trước cha sẽ làm cây bị mồ côi); cha đã bị xoá vĩnh viễn thì
+ * vị trí về làm gốc.
+ */
+export async function restoreLocation(id: string, withItems: boolean): Promise<void> {
+  const db = getDb();
+  const row = await db.getFirstAsync<Location>('SELECT * FROM locations WHERE id = ?', [id]);
+  if (!row || row.is_deleted === 0) return;
+  let parentId = row.parent_id;
+  if (parentId) {
+    const parent = await db.getFirstAsync<Location>('SELECT * FROM locations WHERE id = ?', [parentId]);
+    if (!parent) parentId = null;
+    else if (parent.is_deleted === 1) throw new Error('PARENT_TRASHED');
+  }
+  const deletedAt = row.deleted_at;
+  const meta = parseLocationTrashMeta(row.trash_meta);
+  const now = nowISO();
+  await db.runAsync(
+    'UPDATE locations SET is_deleted = 0, deleted_at = NULL, trash_meta = NULL, parent_id = ?, updated_at = ?, is_dirty = 1 WHERE id = ?',
+    [parentId, now, id],
+  );
+  if (!withItems) return;
+  if (meta) {
+    if (meta.moved_item_ids.length > 0) {
+      const ph = meta.moved_item_ids.map(() => '?').join(',');
+      await db.runAsync(
+        `UPDATE items SET location_id = ?, updated_at = ?, is_dirty = 1 WHERE id IN (${ph}) AND location_id = ? AND is_deleted = 0`,
+        [id, now, ...meta.moved_item_ids, meta.dest_id],
+      );
+    }
+    return;
+  }
+  if (!deletedAt) return;
+  const ids = await getSubtreeLocationIdsAll(id);
+  if (ids.length === 0) return;
+  const ph = ids.map(() => '?').join(',');
+  await db.runAsync(
+    `UPDATE locations SET is_deleted = 0, deleted_at = NULL, trash_meta = NULL, updated_at = ?, is_dirty = 1 WHERE id IN (${ph}) AND is_deleted = 1 AND deleted_at = ?`,
+    [now, ...ids, deletedAt],
+  );
+  await db.runAsync(
+    `UPDATE items SET is_deleted = 0, deleted_at = NULL, updated_at = ?, is_dirty = 1 WHERE location_id IN (${ph}) AND is_deleted = 1 AND deleted_at = ?`,
+    [now, ...ids, deletedAt],
+  );
+}
+
+/**
+ * Xoá vĩnh viễn vị trí trong thùng rác (v93): đợt chuyển đồ thì chỉ xoá
+ * hàng vị trí (đồ đang sống ở chỗ khác không đụng tới); đợt xoá tất cả
+ * thì xoá hẳn cả vị trí con + đồ cùng mốc deleted_at trong cây (đồ qua
+ * permanentDeleteItems để dọn cả media). Đồ/vị trí xoá lẻ trước đó với
+ * mốc khác không bị xoá ké.
+ */
+export async function permanentDeleteLocation(id: string): Promise<void> {
+  const db = getDb();
+  const row = await db.getFirstAsync<Location>('SELECT * FROM locations WHERE id = ?', [id]);
+  if (!row) return;
+  const meta = parseLocationTrashMeta(row.trash_meta);
+  if (!meta && row.deleted_at) {
+    const ids = await getSubtreeLocationIdsAll(id);
+    if (ids.length > 0) {
+      const ph = ids.map(() => '?').join(',');
+      const groupItems = await db.getAllAsync<{ id: string }>(
+        `SELECT id FROM items WHERE location_id IN (${ph}) AND is_deleted = 1 AND deleted_at = ?`,
+        [...ids, row.deleted_at],
+      );
+      if (groupItems.length > 0) {
+        await permanentDeleteItems(groupItems.map((r) => r.id));
+      }
+      await db.runAsync(
+        `DELETE FROM locations WHERE id IN (${ph}) AND is_deleted = 1 AND (deleted_at = ? OR id = ?)`,
+        [...ids, row.deleted_at, id],
+      );
+      return;
+    }
+  }
+  await db.runAsync('DELETE FROM locations WHERE id = ?', [id]);
+}
+
 /** Đường dẫn đầy đủ từ gốc tới vị trí (recursive CTE, đi từ dưới lên) */
 export async function getBreadcrumb(locationId: string | null): Promise<Location[]> {
   if (!locationId) return [];
