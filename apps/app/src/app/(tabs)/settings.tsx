@@ -2257,44 +2257,29 @@ export default function SettingsScreen() {
                   activeOpacity={0.85}
                   onPress={() => toggleTrashSelect(i.id)}
                   style={[styles.card, {
-                    gap: 10, padding: 12,
+                    flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12,
                     backgroundColor: selected ? Colors.chipBg : undefined,
                   }]}
                 >
-                  {/* Hàng 1 (v98): checkbox + ô rác + tên + nút xoá. Tên tối
-                      đa 2 dòng rồi '…' — trước đây tên dài chen chung một
-                      hàng với nút Khôi phục nên hàng bị bóp méo, chữ tràn
-                      khỏi thẻ. Checkbox/tile căn đầu hàng để thẳng với
-                      dòng tên đầu tiên. */}
-                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-                    <Ionicons
-                      name={selected ? 'checkbox' : 'square-outline'}
-                      size={21}
-                      color={selected ? Colors.primary : Colors.subtext}
-                      style={{ marginTop: 1 }}
-                    />
-                    <IOSTile icon="trash-outline" color={Colors.subtext} size={42} iconSize={21} />
-                    <Text
-                      numberOfLines={2}
-                      style={{ flex: 1, fontSize: 14, fontWeight: '600', color: Colors.text, lineHeight: 20 }}
-                    >
-                      {i.name}
-                    </Text>
-                    <TouchableOpacity
-                      style={{ padding: 6 }}
-                      hitSlop={6}
-                      onPress={() => requestTrashDelete([i.id])}
-                    >
-                      <Ionicons name="trash-outline" size={19} color={Colors.danger} />
-                    </TouchableOpacity>
-                  </View>
-                  {/* Hàng 2 (v98): nút Khôi phục tràn hết bề ngang thẻ, kiểu
-                      giống hàng vị trí đã xoá — không còn chen ngang với tên. */}
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={21}
+                    color={selected ? Colors.primary : Colors.subtext}
+                  />
+                  <IOSTile icon="trash-outline" color={Colors.subtext} size={42} iconSize={21} />
+                  <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: Colors.text }}>{i.name}</Text>
                   <TouchableOpacity
-                    style={[styles.buttonSecondary, { paddingVertical: 8, alignItems: 'center' }]}
+                    style={[styles.buttonSecondary, { paddingVertical: 8, paddingHorizontal: 12 }]}
                     onPress={async () => { await handleTrashRestore(i.id); }}
                   >
                     <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('set.restore')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ padding: 6 }}
+                    hitSlop={6}
+                    onPress={() => requestTrashDelete([i.id])}
+                  >
+                    <Ionicons name="trash-outline" size={19} color={Colors.danger} />
                   </TouchableOpacity>
                 </TouchableOpacity>
               );
@@ -2350,10 +2335,11 @@ export default function SettingsScreen() {
       </View>
       )}
 
-      {/* v98: footer nhích lên một chút (bỏ marginTop 12, chỉ còn gap 16
-          của nội dung) theo phản hồi của người dùng. */}
+      {/* v99: footer về lại marginTop 12 như cũ (v98 hiểu sai ý người
+          dùng); thêm marginBottom 24 để khi cuộn tới đáy, dòng footer
+          không chạm nút tròn '+' Thêm đồ ở giữa thanh tab dưới. */}
       {activePanel === null && (
-      <Text style={{ color: Colors.subtext, fontSize: 12, textAlign: 'center', marginTop: 0 }}>
+      <Text style={{ color: Colors.subtext, fontSize: 12, textAlign: 'center', marginTop: 12, marginBottom: 24 }}>
         {t('set.footer', { v: appVersion ?? '0.1.0' })}
       </Text>
       )}
