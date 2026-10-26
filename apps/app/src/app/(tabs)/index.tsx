@@ -1069,12 +1069,12 @@ export default function HomeScreen() {
         }
       />
       {/* Nút THU GỌN (Mẫu C4 — người dùng chốt 26/10/2026, thu nhỏ ở v95
-          vì bản 54dp nhìn to quá; mẫu T3 tím đậm chốt ở v96): nút tròn
-          nổi 44dp ở mép phải (right 22 — lùi vào khỏi mép thêm một chút
-          so với 14 cũ), neo khoảng giữa vùng danh sách (top 38% — đủ cao
+          vì bản 54dp nhìn to quá; mẫu T3 tím đậm ở v96 bị bỏ ở v97):
+          nút tròn nổi 44dp ở mép phải (right 14 — về lại sát mép như
+          v94/v95), neo khoảng giữa vùng danh sách (top 38% — đủ cao
           để khi cuộn tới đáy không đè banner chân trang chứa cặp nút
           Thêm mới/Lên đầu trang ở cuối nội dung). Chỉ icon, không chữ:
-          nền gradient dọc tím đậm primary -> primaryDark,
+          nền gradient dọc tím -> san hô như mẫu C4 gốc,
           icon chevron-up-outline trắng bo tròn (đẹp hơn chevron nhọn cũ).
           Hàng đồ không có nút bấm riêng ở mép phải (cả thẻ là một
           TouchableOpacity) nên nút chỉ phủ một vùng tròn ở mép thẻ. */}
@@ -1084,7 +1084,7 @@ export default function HomeScreen() {
           activeOpacity={0.85}
           accessibilityLabel={t('home.showLess')}
           style={{
-            position: 'absolute', right: 22, top: '38%', zIndex: 10,
+            position: 'absolute', right: 14, top: '38%', zIndex: 10,
             width: 44, height: 44, borderRadius: 22, overflow: 'hidden',
             borderWidth: 2, borderColor: '#fff',
             shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 },
@@ -1092,7 +1092,7 @@ export default function HomeScreen() {
           }}
         >
           <LinearGradient
-            colors={[Colors.primary, Colors.primaryDark]}
+            colors={[Colors.primary, Colors.coral]}
             start={{ x: 0, y: 0 }}
             end={{ x: 0, y: 1 }}
             style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
