@@ -1,21 +1,22 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Switch, Modal, Pressable, TextInput, Linking } from 'react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, Switch, Modal, Pressable, TextInput, Linking, Image, Share } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
-import { styles, Colors, IconTile, ScreenHeader, SectionTitle, AppButton, AppPopup, TAB_BAR_CLEARANCE, type AppPopupOption } from '@/components/ui';
+import { styles, Colors, SectionTitle, AppButton, AppPopup, TAB_BAR_CLEARANCE, type AppPopupOption } from '@/components/ui';
+import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import type { Item } from '@/types';
 import {
-  countActiveItems, countLocations, listItems, listDeletedItems, restoreItem, getBreadcrumb, breadcrumbText,
+  countRealActiveItems, countRealLocations, listItems, listDeletedItems, restoreItem, permanentDeleteItems, getBreadcrumb, breadcrumbText,
+  findItemByBarcode, findLocationByQrCode,
 } from '@/db/queries';
 import { ftsAvailable, kvGet, kvSet } from '@/db/client';
 import { useAppStore } from '@/store/useAppStore';
 import { useT } from '@/i18n';
 import { rescheduleAllReminders } from '@/services/notificationService';
-import { getLimits, getPlanSync, loadPlan, setSimPro, type PlanId } from '@/services/planService';
-import { redeemPromoCode } from '@/services/promoService';
+import { getLimits, getPlanSync, loadPlan, type PlanId } from '@/services/planService';
 import {
   getLockConfig, hasPin as lockHasPin, isBiometricAvailable, setLockConfig, setPin, verifyPin,
   LOCK_TIMEOUT_CHOICES, type LockConfig,
@@ -26,11 +27,26 @@ import { exportBackup, importBackup, BackupError } from '@/services/backupServic
 import { isDriveConfigured } from '@/config';
 import {
   checkDriveBackupMissing, connectDrive, createDriveBackup, disconnectDrive, DriveError,
-  getDriveConnectionInfo, hasDriveMasterKey, listDriveBackups, restoreFromDrive,
-  setupDriveMasterKey, type DriveBackupFile,
+  getDriveConnectionInfo, getPromoConnectionInfo, hasDriveMasterKey, listDriveBackups, restoreFromDrive,
+  setupDriveMasterKey, signInForPromo, switchGoogleAccount, switchPromoGoogleAccount, type DriveBackupFile,
 } from '@/services/driveService';
-import { getRemoteFlagsSync, loadRemoteConfig } from '@/services/remoteConfigService';
-import { categoryLabel, statusLabel, tint } from '@/theme';
+import {
+  formatBytes,
+  getCloudApiUrl,
+  getStorageTier,
+  setStorageTier,
+} from '@/services/storagePlanService';
+import {
+  CloudBackupError,
+  downloadCloudBackup,
+  getCloudUsage,
+  setCloudTier,
+  uploadCloudBackup,
+  type CloudUsage,
+} from '@/services/cloudBackupService';
+import { getAppVersion, getMaintenanceNotice, getMinVersion, getRemoteFlagsSync, getStoragePlans, isCloudBackupEnabled, isDriveBackupEnabled, isUpdateRequired, loadRemoteConfig, type StoragePlan } from '@/services/remoteConfigService';
+import { getPromoIdToken, redeemPromoCodeViaServer, syncPlanFromServer } from '@/services/promoService';
+import { categoryLabel, statusLabel, tint, cardShadow, type IconName } from '@/theme';
 import { SCHEMA_VERSION } from '@/db/schema';
 
 /** Segmented chọn số ngày (dùng cho 2 ngưỡng cảnh báo) */
@@ -120,11 +136,11 @@ function PasswordWarnBox({ text }: { text: string }) {
 }
 
 /**
- * Nút "Kết nối Google Drive": gọi connectDrive() của driveService — đăng
- * nhập NATIVE qua Google Play Services (hộp thoại chọn tài khoản của hệ
- * thống, không mở trình duyệt). Người dùng huỷ chọn tài khoản thì im lặng
- * (không popup lỗi); lỗi thật (thiếu Play Services, lỗi native) mới báo
- * qua onError để màn hình map sang thông điệp i18n.
+ * Nút "Kết nối Google Drive" — v84 theo cờ quản trị drive_backup_enabled:
+ * cờ tắt thì mục Drive khoá hẳn và nút này không hiện; cờ bật thì nút này
+ * gọi connectDrive() scope Drive như trước v82. Đổi mã khuyến mãi không
+ * đi qua nút này mà qua modal đổi mã với luồng đăng nhập scope cơ bản
+ * riêng.
  */
 /**
  * Nhường 1 nhịp render (~50ms) để trạng thái bận của nút xác nhận kịp vẽ
@@ -135,42 +151,107 @@ function yieldUiTick(): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, 50); });
 }
 
-function DriveConnectButton({ onConnected, onError }: { onConnected: () => void; onError: (e: unknown) => void }) {
+function DriveConnectButton({ onConnect, loading }: { onConnect: () => void; loading?: boolean }) {
   const { t } = useT();
-  const [busy, setBusy] = useState(false);
-
-  async function handleConnect() {
-    setBusy(true);
-    try {
-      const res = await connectDrive();
-      if (res.status === 'cancelled') return;
-      onConnected();
-    } catch (e) {
-      onError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <AppButton
       title={t('drive.connectBtn')}
       variant="secondary"
       icon="logo-google"
-      loading={busy}
-      disabled={busy}
-      onPress={() => { handleConnect().catch(() => {}); }}
+      loading={loading}
+      onPress={onConnect}
     />
   );
 }
 
+/**
+ * Huy hiệu gói (v84): Free/Pro phải nhìn là phân biệt ngay, không chỉ đọc
+ * chữ trong dòng mô tả — Pro: nền vàng cam + icon kim cương; Free: nền
+ * tím nhạt (thẻ sáng) hoặc trắng mờ (thẻ tối) + icon khối. Dùng chung ở
+ * thẻ tài khoản và thẻ gói, chữ PRO/FREE là ký hiệu quốc tế, không cần
+ * thêm key i18n.
+ */
+function PlanBadge({ planId, dark }: { planId: string; dark?: boolean }) {
+  const isPro = planId === 'PRO';
+  const fg = isPro || dark ? '#fff' : Colors.primary;
+  return (
+    <View
+      style={{
+        flexDirection: 'row', alignItems: 'center', gap: 4,
+        paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999,
+        backgroundColor: isPro ? '#FF9F43' : dark ? 'rgba(255,255,255,0.18)' : '#E5E0F5',
+      }}
+    >
+      <Ionicons name={isPro ? 'diamond' : 'cube-outline'} size={11} color={fg} />
+      <Text style={{ fontSize: 11, fontWeight: '800', letterSpacing: 1, color: fg }}>
+        {isPro ? 'PRO' : 'FREE'}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Tile icon phong cách iOS (chốt iOS cho Cài đặt v70): hình vuông bo góc
+ * kiểu squircle (~30% cạnh), nền MÀU ĐẶC hệ thống iOS, glyph Ionicons
+ * trắng bên trong (Ionicons vốn đã kiểu iOS). RIÊNG màn Cài đặt này dùng
+ * — không sửa IconTile dùng chung của app. Màu cũ của app được map sang
+ * màu hệ thống iOS gần nhất để toàn màn đồng nhất phong cách iOS.
+ */
+const IOS_COLORS: Record<string, string> = {
+  '#0FB5A8': '#5AC8FA',
+  '#38A8E8': '#007AFF',
+  '#FF9F43': '#FF9500',
+  '#FF5A76': '#FF3B30',
+  '#6D28D9': '#AF52DE',
+  '#E5484D': '#FF3B30',
+  '#22A06B': '#34C759',
+  '#6E6890': '#8E8E93',
+};
+
+function IOSTile({
+  icon, color, size = 48, iconSize = 24,
+}: {
+  icon: IconName;
+  color: string;
+  size?: number;
+  iconSize?: number;
+}) {
+  return (
+    <View
+      style={{
+        width: size, height: size, borderRadius: Math.round(size * 0.3),
+        backgroundColor: IOS_COLORS[color] ?? color,
+        alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <Ionicons name={icon} size={iconSize} color="#fff" />
+    </View>
+  );
+}
+
+/** Chuẩn hoá bỏ dấu tiếng Việt để tìm kiếm menu không dấu (đ/Đ xử lý riêng vì NFD không tách được) */
+function stripMarks(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd').toLowerCase();
+}
+
+/** 8 bảng Cài đặt — mỗi menu to mở đúng 1 bảng ngay trong cùng màn hình */
+type PanelId = 'data' | 'app' | 'alerts' | 'security' | 'backup' | 'tools' | 'support' | 'trash';
+
 export default function SettingsScreen() {
   const { t } = useT();
+  // Phiên bản hiển thị ở nhóm Thông tin: lấy từ app.json qua expoConfig
+  // (getAppVersion), không hardcode — null thì hàng chỉ hiện tên app.
+  const appVersion = getAppVersion();
   const langMode = useAppStore((s) => s.langMode);
+  const lang = useAppStore((s) => s.lang);
   const setLangMode = useAppStore((s) => s.setLangMode);
   const [activeCount, setActiveCount] = useState(0);
   const [locCount, setLocCount] = useState(0);
   const [trash, setTrash] = useState<Item[]>([]);
+  // Thùng rác: id các món đang chọn + hộp xác nhận xoá vĩnh viễn đang chờ
+  const [trashSelected, setTrashSelected] = useState<string[]>([]);
+  const [trashDeletePending, setTrashDeletePending] = useState<{ ids: string[]; title: string; message: string } | null>(null);
   const [exporting, setExporting] = useState(false);
   const [demoExists, setDemoExists] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
@@ -190,17 +271,22 @@ export default function SettingsScreen() {
   const [pendingImportUri, setPendingImportUri] = useState<string | null>(null);
   const [pendingImport, setPendingImport] = useState<{ uri: string; password: string } | null>(null);
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
-  // Gói hiện tại (Phase 6 — khung Pro): đọc qua planService, đổi qua cờ giả lập
+  // Gói hiện tại (Phase 6 — khung Pro): đọc qua planService; mã khuyến mại
+  // tự quản (promoService) cấp Pro qua cờ plan_sim_pro mà planService đọc.
   const [planId, setPlanId] = useState<PlanId>('FREE');
-  // Mã khuyến mãi tự quản của chủ app: mã chỉ sống trong state tạm của modal;
-  // kiểm tra + cấp quyền qua promoService (seam — TODO backend/RevenueCat ở đó)
+  // Mã khuyến mại tự quản: modal nhập mã + công tắc cấu hình từ xa
+  // (selfPromoEnabled TẮT → ẩn hẳn điểm nhập mã, thay bằng lối Play).
   const [promoOpen, setPromoOpen] = useState(false);
   const [promoCode, setPromoCode] = useState('');
   const [promoBusy, setPromoBusy] = useState(false);
+  const [promoLoginBusy, setPromoLoginBusy] = useState(false);
+  const [googleSwitchBusy, setGoogleSwitchBusy] = useState(false);
   const [promoError, setPromoError] = useState<string | null>(null);
-  // Công tắc cấu hình từ xa cho ô nhập mã tự quản (remoteConfigService):
-  // tắt → ẩn hẳn điểm nhập mã, promoService cũng từ chối đổi mã ở service
   const [selfPromoEnabled, setSelfPromoEnabled] = useState(true);
+  // Thông báo từ máy chủ (cấu hình từ xa): bảo trì + nhắc cập nhật. Chỉ
+  // hiện banner, không chặn app — quyết định chặn là quyết định sản phẩm.
+  const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
+  const [updateRequired, setUpdateRequired] = useState<string | null>(null);
   // Cảnh báo mất sao lưu Drive (Mảng 8): phát hiện bởi checkDriveBackupMissing
   // trong driveService — mỗi lần mất chỉ hiện đúng 1 lần
   const [driveMissingWarn, setDriveMissingWarn] = useState(false);
@@ -222,6 +308,11 @@ export default function SettingsScreen() {
   const driveConfigured = isDriveConfigured();
   const [driveEmail, setDriveEmail] = useState<string | null>(null);
   const [driveConnectedState, setDriveConnectedState] = useState(false);
+  // v82: trạng thái đăng nhập cho ĐỔI MÃ (scope cơ bản) tách riêng khỏi
+  // Drive — Drive luôn ở trạng thái "chưa kết nối" vì nút Drive chỉ báo
+  // đang phát triển, còn modal đổi mã đọc đúng 2 state promo này.
+  const [promoEmail, setPromoEmail] = useState<string | null>(null);
+  const [promoConnectedState, setPromoConnectedState] = useState(false);
   const [driveHasKey, setDriveHasKey] = useState(false);
   const [driveLastAt, setDriveLastAt] = useState<string | null>(null);
   const [driveLastStatus, setDriveLastStatus] = useState<string | null>(null);
@@ -234,65 +325,249 @@ export default function SettingsScreen() {
   const [drivePwShow, setDrivePwShow] = useState(false);
   const [drivePwError, setDrivePwError] = useState<string | null>(null);
   const [driveRestoreList, setDriveRestoreList] = useState<DriveBackupFile[] | null>(null);
+  // Lưu trữ trên Cloud của Smartstash (Phase 6): gói lưu trữ + sao lưu mã hoá lên Worker —
+  // state chỉ là bản chụp để render; mật khẩu chỉ sống trong state tạm
+  const [cloudTier, setCloudTierState] = useState(100);
+  const [storagePlans, setStoragePlansState] = useState<StoragePlan[]>(() => getStoragePlans());
+  const [cloudUsage, setCloudUsage] = useState<CloudUsage | null>(null);
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const [cloudPwModal, setCloudPwModal] = useState<{ mode: 'upload' | 'restore'; fileName?: string } | null>(null);
+  const [cloudPw, setCloudPw] = useState('');
+  const [cloudPwConfirm, setCloudPwConfirm] = useState('');
+  const [cloudPwShow, setCloudPwShow] = useState(false);
+  const [cloudPwError, setCloudPwError] = useState<string | null>(null);
+  const [cloudPwBusy, setCloudPwBusy] = useState(false);
+  const [pendingCloudRestore, setPendingCloudRestore] = useState<{ fileName: string; password: string } | null>(null);
+  const [showCloudOverwrite, setShowCloudOverwrite] = useState(false);
+  // Công tắc khoá/mở sao lưu từ quản trị (v84): mặc định khoá (false)
+  // cho tới khi loadRemoteConfig() nạp được cờ thật từ máy chủ.
+  const [cloudBackupEnabled, setCloudBackupEnabled] = useState(false);
+  const [driveBackupEnabled, setDriveBackupEnabled] = useState(false);
   const [pendingDriveRestore, setPendingDriveRestore] = useState<DriveBackupFile | null>(null);
   const refreshTick = useAppStore((s) => s.refreshTick);
   const bump = useAppStore((s) => s.bump);
+  // Cài đặt kiểu mới v70: màn chính là danh sách menu to, nhấn vào mở
+  // bảng của nhóm ngay trong cùng màn hình (không tạo route mới cho 8 bảng)
+  const [activePanel, setActivePanel] = useState<PanelId | null>(null);
+  const [menuQuery, setMenuQuery] = useState('');
+  const [showScanner, setShowScanner] = useState(false);
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
+
+  /**
+   * Đồng bộ avatar Google vào avatar chung của app (v84): thẻ tài khoản ở
+   * đây và avatar hero ở Trang chủ CÙNG đọc app_kv 'avatar_uri', nên chỉ
+   * cần ghi URL ảnh Google vào đó là cả hai nơi cùng hiện ảnh đó.
+   * - Chỉ lấp vào khi chưa có avatar riêng, hoặc avatar hiện tại đã là
+   *   ảnh Google cũ (đổi tài khoản → ảnh mới thay ảnh cũ).
+   * - Avatar riêng người dùng tự chọn (file trong thư mục ảnh của app)
+   *   KHÔNG bị ghi đè; muốn dùng lại ảnh Google thì xoá avatar ở Trang
+   *   chủ rồi mở lại Cài đặt là ảnh Google tự lấp vào.
+   * - Xoá avatar ở Trang chủ an toàn với URL này: removeAvatarImage chỉ
+   *   xoá file bắt đầu bằng thư mục ảnh của app, URL ngoài không bị đụng.
+   */
+  async function syncGoogleAvatar(photo: string | null): Promise<void> {
+    if (!photo) return;
+    try {
+      const current = await kvGet('avatar_uri');
+      if (!current || current.includes('googleusercontent.com')) {
+        await kvSet('avatar_uri', photo);
+        setAvatarUri(photo);
+      }
+    } catch {
+      // đồng bộ avatar lỗi thì thôi — email + huy hiệu Google vẫn hiện
+    }
+  }
 
   const load = useCallback(async () => {
-    setActiveCount(await countActiveItems());
-    setLocCount(await countLocations());
+    setActiveCount(await countRealActiveItems());
+    setLocCount(await countRealLocations());
     setTrash(await listDeletedItems());
     setDemoExists(!!(await kvGet('demo_seed_ids')));
+    // Thẻ tài khoản ở đầu màn chính: avatar bền trong app_kv (cùng cách màn
+    // Home đang dùng) — chỉ hiển thị, không tạo hệ thống tài khoản mới
+    const av = await kvGet('avatar_uri');
+    setAvatarUri(av || null);
     setAlertCfgState(await getAlertSettings());
     await loadPlan();
     setPlanId(getPlanSync());
     setLockCfg(await getLockConfig());
     setPinExists(await lockHasPin());
     setBioAvail(await isBiometricAvailable());
-    const conn = await getDriveConnectionInfo();
-    setDriveConnectedState(conn.connected);
-    setDriveEmail(conn.email);
+    // Trạng thái đăng nhập thật ở đây là của luồng đổi mã (scope cơ bản);
+    // trạng thái Drive thật được nạp sau, khi đã biết cờ khoá/mở Drive.
+    const conn = await getPromoConnectionInfo().catch(() => ({ connected: false, email: null, photo: null }));
+    setPromoConnectedState(conn.connected);
+    setPromoEmail(conn.email);
+    // v84: người dùng đã đăng nhập từ bản cũ cũng được đồng bộ ảnh ngay
+    // khi mở Cài đặt lần đầu ở bản này (không cần đăng nhập lại).
+    if (conn.connected) await syncGoogleAvatar(conn.photo);
+    setDriveConnectedState(false);
+    setDriveEmail(null);
+    // Đồng bộ gói từ máy chủ (v78): chỉ khi đã đăng nhập Google; lỗi mạng
+    // hay token hết hạn thì sync tự giữ gói cũ, không chặn màn hình.
+    if (conn.connected) {
+      await syncPlanFromServer().catch(() => {});
+      setPlanId(getPlanSync());
+    }
     setDriveHasKey(await hasDriveMasterKey());
     setDriveLastAt(await kvGet('drive_last_at'));
     setDriveLastStatus(await kvGet('drive_last_status'));
     setDriveAuto((await kvGet('drive_auto')) === '1');
     await loadRemoteConfig().catch(() => {});
     setSelfPromoEnabled(getRemoteFlagsSync().selfPromoEnabled);
-    // Phát hiện sao lưu Drive bị mất (Mảng 8): chỉ khi đang kết nối; hàm
-    // tự chống nhắc lại (1 lần/lần mất) và không bao giờ đụng dữ liệu máy
-    if (conn.connected) {
-      const missing = await checkDriveBackupMissing().catch(() => false);
-      if (missing) setDriveMissingWarn(true);
+    setStoragePlansState(getStoragePlans());
+    setMaintenanceNotice(getMaintenanceNotice());
+    const minV = getMinVersion();
+    setUpdateRequired(isUpdateRequired(minV) ? minV : null);
+    // v84: công tắc khoá/mở sao lưu từ quản trị — Drive chỉ có trạng thái
+    // thật + cảnh báo mất sao lưu khi cờ đang BẬT; cờ TẮT thì mục Drive
+    // khoá hẳn (không kết nối, không cảnh báo).
+    setCloudBackupEnabled(isCloudBackupEnabled());
+    setDriveBackupEnabled(isDriveBackupEnabled());
+    if (isDriveBackupEnabled()) {
+      const dconn = await getDriveConnectionInfo().catch(() => ({ connected: false, email: null, photo: null }));
+      setDriveConnectedState(dconn.connected);
+      setDriveEmail(dconn.email);
+      setDriveMissingWarn(dconn.connected ? await checkDriveBackupMissing() : false);
+    } else {
+      setDriveConnectedState(false);
+      setDriveEmail(null);
+      setDriveMissingWarn(false);
     }
+    // Lưu trữ trên Cloud của Smartstash: nạp gói + usage (lỗi thì im lặng —
+    // nút Làm mới trong mục sẽ báo lỗi rõ). Mây đang khoá thì không gọi
+    // máy chủ làm gì — usage để null, mục mây chỉ hiện thông báo khoá.
+    setCloudTierState(await getStorageTier());
+    if (isCloudBackupEnabled()) await refreshCloudUsage(true).catch(() => {});
+    else setCloudUsage(null);
   }, []);
 
-  /** Đổi một tuỳ chọn cảnh báo: lưu alert_cfg + đặt lại lịch nhắc + báo các màn khác tải lại */
-  async function changeAlert<K extends keyof AlertSettings>(key: K, value: AlertSettings[K]) {
-    const next = await setAlertSetting(key, value);
-    setAlertCfgState(next);
-    rescheduleAllReminders().catch(() => {});
-    bump();
-  }
-
-  /** Bật/tắt giả lập Pro: ghi cờ qua planService rồi bump để toàn app áp lại giới hạn + cổng */
-  async function handleSimToggle(enabled: boolean) {
-    const next = await setSimPro(enabled);
-    setPlanId(next);
-    bump();
-  }
-
-  /** Mở modal nhập mã khuyến mãi: xoá trắng ô + lỗi mỗi lần mở */
-  function openPromoModal() {
+  /**
+   * Mã khuyến mại: mở modal (reset ô nhập + lỗi, làm mới trạng thái đăng
+   * nhập Google để modal biết hiện khối đăng nhập hay ô nhập mã).
+   */
+  async function openPromoModal() {
     setPromoCode('');
     setPromoError(null);
     setPromoBusy(false);
+    const conn = await getPromoConnectionInfo().catch(() => ({ connected: false, email: null, photo: null }));
+    setPromoConnectedState(conn.connected);
+    setPromoEmail(conn.email);
     setPromoOpen(true);
   }
 
   /**
-   * Áp dụng mã khuyến mãi: lỗi phân loại của promoService hiện TẠI CHỖ trong
-   * modal (không đóng modal); thành công thì đóng modal, làm mới hiển thị
-   * gói ngay (planService đã cấp qua cùng cơ chế gói) và báo quyền lợi đã nhận.
+   * Đăng nhập Google ngay trong modal đổi mã (v78, v82 tách scope cơ
+   * bản): dùng signInForPromo(), KHÔNG xin drive.appdata nên không vướng
+   * xác minh. Huỷ picker thì im lặng ở lại khối đăng nhập.
+   */
+  async function handlePromoLogin() {
+    setPromoLoginBusy(true);
+    setPromoError(null);
+    try {
+      const res = await signInForPromo();
+      if (res.status === 'connected') {
+        const conn = await getPromoConnectionInfo();
+        setPromoConnectedState(conn.connected);
+        setPromoEmail(conn.email);
+        await syncGoogleAvatar(conn.photo);
+      }
+    } catch {
+      setPromoError(t('promo.loginError'));
+    } finally {
+      setPromoLoginBusy(false);
+    }
+  }
+
+  /**
+   * Kết nối Drive (v84, chỉ khi cờ drive_backup_enabled đang BẬT):
+   * connectDrive() scope drive.appdata như v80; kết nối xong lấy lại
+   * trạng thái Drive thật + đồng bộ avatar Google nếu có ảnh.
+   */
+  async function handleDriveConnect() {
+    setDriveBusy(true);
+    try {
+      const res = await connectDrive();
+      if (res.status === 'connected') {
+        const dconn = await getDriveConnectionInfo();
+        setDriveConnectedState(dconn.connected);
+        setDriveEmail(dconn.email);
+        await syncGoogleAvatar(dconn.photo);
+      }
+    } catch (e) {
+      showInfo(t('drive.title'), driveErrorMessage(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  }
+
+  /**
+   * Đổi tài khoản Google (v80, v82 tách luồng):
+   * - source 'modal' (đổi mã): switchPromoGoogleAccount() scope cơ bản;
+   *   đổi xong lấy lại trạng thái tài khoản + đồng bộ gói từ máy chủ, vì
+   *   gói gắn với tài khoản nên tài khoản mới có thể có gói khác. Huỷ
+   *   bảng chọn mà phiên cũ cứu được thì giữ nguyên mọi thứ; huỷ mà
+   *   phiên cũ mất thì UI báo rõ là đã đăng xuất (không đăng xuất lén).
+   * - source 'drive': v84 theo cờ — cờ TẮT thì chỉ báo đang khoá, TUYỆT
+   *   ĐỐI không signOut/signIn (tránh đăng xuất luôn phiên đổi mã);
+   *   cờ BẬT thì switchGoogleAccount() scope Drive như v80.
+   */
+  async function handleSwitchGoogleAccount(source: 'modal' | 'drive') {
+    if (source === 'drive') {
+      if (!isDriveBackupEnabled()) {
+        showInfo(t('drive.developingTitle'), t('drive.lockedMsg'));
+        return;
+      }
+      setGoogleSwitchBusy(true);
+      try {
+        const res = await switchGoogleAccount();
+        if (res.status === 'switched') {
+          const dconn = await getDriveConnectionInfo();
+          setDriveConnectedState(dconn.connected);
+          setDriveEmail(dconn.email);
+          await syncGoogleAvatar(dconn.photo);
+        } else if (res.status === 'signed_out') {
+          setDriveConnectedState(false);
+          setDriveEmail(null);
+          showInfo(t('drive.title'), t('promo.switchSignedOut'));
+        }
+      } catch (e) {
+        showInfo(t('drive.title'), driveErrorMessage(e));
+      } finally {
+        setGoogleSwitchBusy(false);
+      }
+      return;
+    }
+    setGoogleSwitchBusy(true);
+    setPromoError(null);
+    try {
+      const res = await switchPromoGoogleAccount();
+      if (res.status === 'switched') {
+        const conn = await getPromoConnectionInfo();
+        setPromoConnectedState(conn.connected);
+        setPromoEmail(conn.email);
+        await syncGoogleAvatar(conn.photo);
+        await syncPlanFromServer().catch(() => {});
+        setPlanId(getPlanSync());
+      } else if (res.status === 'signed_out') {
+        setPromoConnectedState(false);
+        setPromoEmail(null);
+        setPromoError(t('promo.switchSignedOut'));
+      }
+      // 'cancelled' = phiên cũ đã cứu được: giữ nguyên mọi thứ, không báo gì
+    } catch {
+      setPromoError(t('promo.switchError'));
+    } finally {
+      setGoogleSwitchBusy(false);
+    }
+  }
+
+  /**
+   * Áp dụng mã khuyến mại qua máy chủ: lỗi phân loại của promoService hiện
+   * TẠI CHỖ trong modal (không đóng modal); thành công thì đóng modal, làm
+   * mới hiển thị gói ngay và báo quyền lợi đã nhận. Token hết hạn giữa
+   * chừng thì quay về khối đăng nhập để người dùng đăng nhập lại.
    */
   async function handlePromoApply() {
     if (!promoCode.trim()) {
@@ -302,7 +577,13 @@ export default function SettingsScreen() {
     setPromoBusy(true);
     setPromoError(null);
     try {
-      const res = await redeemPromoCode(promoCode);
+      const idToken = await getPromoIdToken();
+      if (!idToken) {
+        setPromoConnectedState(false);
+        setPromoError(t('promo.loginRequired'));
+        return;
+      }
+      const res = await redeemPromoCodeViaServer(promoCode, idToken);
       if (res.status === 'success') {
         setPromoOpen(false);
         setPlanId(getPlanSync());
@@ -312,10 +593,26 @@ export default function SettingsScreen() {
         setPromoError(t('promo.disabled'));
       } else if (res.status === 'not_found') {
         setPromoError(t('promo.notFound'));
-      } else if (res.status === 'already_used') {
-        setPromoError(t('promo.used'));
-      } else {
+      } else if (res.status === 'uses_exhausted') {
+        setPromoError(t('promo.usesExhausted'));
+      } else if (res.status === 'campaign_used') {
+        setPromoError(t('promo.campaignUsed'));
+      } else if (res.status === 'not_started') {
+        setPromoError(t('promo.notStarted'));
+      } else if (res.status === 'expired') {
         setPromoError(t('promo.expired'));
+      } else if (res.status === 'paid_active') {
+        setPromoError(t('promo.paidActive'));
+      } else if (res.status === 'rate_limited') {
+        setPromoError(t('promo.rateLimited'));
+      } else if (res.status === 'account_required') {
+        setPromoConnectedState(false);
+        setPromoError(t('promo.loginRequired'));
+      } else if (res.status === 'invalid_token') {
+        setPromoConnectedState(false);
+        setPromoError(t('promo.invalidToken'));
+      } else {
+        setPromoError(t('promo.networkError'));
       }
     } finally {
       setPromoBusy(false);
@@ -325,6 +622,186 @@ export default function SettingsScreen() {
   /** Mã Google Play do Google xử lý — app chỉ mở trang đổi mã chính thức */
   function openGooglePlayRedeem() {
     Linking.openURL('https://play.google.com/redeem').catch(() => {});
+  }
+
+  /** Thùng rác: tải lại danh sách + tỉa selection về các id còn trong danh sách */
+  async function refreshTrash() {
+    const list = await listDeletedItems();
+    setTrash(list);
+    const kept = new Set(list.map((i) => i.id));
+    setTrashSelected((prev) => prev.filter((id) => kept.has(id)));
+  }
+
+  function toggleTrashSelect(id: string) {
+    setTrashSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function handleTrashRestore(id: string) {
+    await restoreItem(id);
+    bump();
+    await refreshTrash();
+  }
+
+  /** Mở hộp xác nhận xoá vĩnh viễn (1 món ghi tên, nhiều món ghi số lượng) */
+  function requestTrashDelete(ids: string[]) {
+    if (ids.length === 0) return;
+    if (ids.length === 1) {
+      const item = trash.find((i) => i.id === ids[0]);
+      setTrashDeletePending({
+        ids,
+        title: t('set.trashDeleteTitle'),
+        message: t('set.trashDeleteConfirmOne', { name: item?.name ?? '' }),
+      });
+    } else {
+      setTrashDeletePending({
+        ids,
+        title: t('set.trashDeleteTitle'),
+        message: t('set.trashDeleteConfirm', { n: ids.length }),
+      });
+    }
+  }
+
+  async function handleTrashDeleteConfirm() {
+    const ids = trashDeletePending?.ids ?? [];
+    setTrashDeletePending(null);
+    if (ids.length === 0) return;
+    await permanentDeleteItems(ids);
+    bump();
+    await refreshTrash();
+    showInfo(t('set.trashDeleteTitle'), t('set.trashDeleted', { n: ids.length }));
+  }
+
+  /** Lưu trữ trên Cloud của Smartstash: dịch mã lỗi service thành câu báo cho người dùng */
+  function cloudErrorMessage(e: unknown): string {
+    if (e instanceof CloudBackupError) {
+      switch (e.code) {
+        case 'NOT_CONFIGURED': return t('cloud.notConfigured');
+        case 'QUOTA_EXCEEDED': return t('cloud.quotaErr');
+        case 'UNAUTHORIZED': return t('cloud.authErr');
+        case 'STORAGE_NOT_CONFIGURED': return t('cloud.storageErr');
+        case 'NETWORK': return t('cloud.networkErr');
+        default: return t('cloud.serverErr');
+      }
+    }
+    return t('cloud.serverErr');
+  }
+
+  /** Lưu trữ trên Cloud của Smartstash: nạp usage từ máy chủ (silent = lỗi thì im lặng, dùng khi mở màn) */
+  async function refreshCloudUsage(silent = false): Promise<void> {
+    const url = await getCloudApiUrl();
+    if (!url) {
+      setCloudUsage(null);
+      return;
+    }
+    try {
+      const usage = await getCloudUsage();
+      setCloudUsage(usage);
+      setCloudTierState(usage.tier_mb);
+    } catch (e) {
+      if (!silent) showInfo(t('cloud.title'), cloudErrorMessage(e));
+    }
+  }
+
+  /** Lưu trữ trên Cloud của Smartstash: đổi gói (đồng bộ lên máy chủ) */
+  async function handleCloudTierChange(mb: number): Promise<void> {
+    if (mb === cloudTier) return;
+    setCloudBusy(true);
+    try {
+      const url = await getCloudApiUrl();
+      if (url) {
+        const serverTier = await setCloudTier(mb);
+        await setStorageTier(serverTier);
+        setCloudTierState(serverTier);
+      } else {
+        await setStorageTier(mb);
+        setCloudTierState(mb);
+      }
+      await refreshCloudUsage(true).catch(() => {});
+    } catch (e) {
+      showInfo(t('cloud.title'), cloudErrorMessage(e));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  /** Lưu trữ trên Cloud của Smartstash: mở modal mật khẩu (xoá trắng ô + lỗi mỗi lần mở) */
+  function openCloudPwModal(mode: 'upload' | 'restore', fileName?: string): void {
+    setCloudPw('');
+    setCloudPwConfirm('');
+    setCloudPwError(null);
+    setCloudPwShow(false);
+    setCloudPwBusy(false);
+    setCloudPwModal({ mode, fileName });
+  }
+
+  /** Lưu trữ trên Cloud của Smartstash: xác nhận modal mật khẩu — upload thì sao lưu ngay,
+      restore thì chuyển sang bước xác nhận ghi đè */
+  async function handleCloudPwSubmit(): Promise<void> {
+    if (!cloudPwModal) return;
+    if (cloudPwModal.mode === 'upload') {
+      if (cloudPw.length < 6) {
+        setCloudPwError(t('backup.pwTooShort'));
+        return;
+      }
+      if (cloudPw !== cloudPwConfirm) {
+        setCloudPwError(t('backup.pwMismatch'));
+        return;
+      }
+    } else if (cloudPw.length === 0) {
+      setCloudPwError(t('backup.pwEmpty'));
+      return;
+    }
+    setCloudPwBusy(true);
+    try {
+      if (cloudPwModal.mode === 'upload') {
+        const res = await uploadCloudBackup(cloudPw);
+        setCloudPwModal(null);
+        setCloudPw('');
+        setCloudPwConfirm('');
+        showInfo(t('cloud.title'), t('cloud.backupDone', { name: res.name }));
+        await refreshCloudUsage(true).catch(() => {});
+      } else {
+        setPendingCloudRestore({ fileName: cloudPwModal.fileName ?? '', password: cloudPw });
+        setCloudPwModal(null);
+        setCloudPw('');
+        setCloudPwConfirm('');
+        setShowCloudOverwrite(true);
+      }
+    } catch (e) {
+      setCloudPwError(cloudErrorMessage(e));
+    } finally {
+      setCloudPwBusy(false);
+    }
+  }
+
+  /** Lưu trữ trên Cloud của Smartstash: xác nhận ghi đè → tải bản trên mây về và khôi phục */
+  async function handleCloudRestoreConfirm(): Promise<void> {
+    if (!pendingCloudRestore) return;
+    setShowCloudOverwrite(false);
+    setCloudBusy(true);
+    try {
+      await downloadCloudBackup(pendingCloudRestore.fileName, pendingCloudRestore.password);
+      setPendingCloudRestore(null);
+      bump();
+      showInfo(t('cloud.title'), t('cloud.restoreDone'));
+      await refreshCloudUsage(true).catch(() => {});
+    } catch (e) {
+      if (e instanceof BackupError) {
+        showInfo(t('cloud.title'), e.code === 'WRONG_PASSWORD' ? t('backup.wrongPw') : t('backup.invalidFile'));
+      } else {
+        showInfo(t('cloud.title'), cloudErrorMessage(e));
+      }
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  /** Đổi một tuỳ chọn cảnh báo: lưu alert_cfg + đặt lại lịch nhắc + báo các màn khác tải lại */
+  async function changeAlert<K extends keyof AlertSettings>(key: K, value: AlertSettings[K]) {
+    const next = await setAlertSetting(key, value);
+    setAlertCfgState(next);
+    rescheduleAllReminders().catch(() => {});
+    bump();
   }
 
   /** Công tắc khoá app: bật lần đầu phải đặt PIN trước; tắt phải xác nhận bằng PIN hiện tại */
@@ -694,11 +1171,159 @@ export default function SettingsScreen() {
     }
   }
 
-  return (
-    <ScrollView style={[styles.screen, { paddingTop: 54 }]} contentContainerStyle={[styles.content, { paddingBottom: TAB_BAR_CLEARANCE }]}>
-      <ScreenHeader title={t('set.title')} subtitle={t('set.subtitle')} icon="settings" color={Colors.primary} />
+  /** Kiểm tra cập nhật: làm mới cấu hình từ xa rồi báo kết quả bằng popup */
+  async function handleCheckUpdate() {
+    await loadRemoteConfig().catch(() => {});
+    setMaintenanceNotice(getMaintenanceNotice());
+    const minV = getMinVersion();
+    setUpdateRequired(isUpdateRequired(minV) ? minV : null);
+    if (isUpdateRequired(minV)) {
+      showInfo(t('set.supCheckTitle'), t('set.supCheckNew', { v: minV ?? '' }));
+    } else {
+      showInfo(t('set.supCheckTitle'), t('set.supCheckLatest'));
+    }
+  }
 
-      {/* Thẻ gói SmartStash (Phase 6 — khung Pro): gói hiện tại + quyền lợi + giả lập kiểm tra */}
+  /** Danh sách 8 menu to ở màn chính (tiêu đề + mô tả + tile iOS) —
+      thứ tự v83: Backup lên đầu (thay chỗ Data cũ), Data xuống ngay
+      trên Support; các menu còn lại giữ nguyên thứ tự tương đối. */
+  const MENUS: { id: PanelId; title: string; desc: string; icon: IconName; color: string }[] = [
+    { id: 'backup', title: t('set.menuBackup'), desc: t('set.menuBackupDesc'), icon: 'cloud-upload-outline', color: '#5AC8FA' },
+    { id: 'app', title: t('set.app'), desc: t('set.menuAppDesc'), icon: 'apps', color: '#AF52DE' },
+    { id: 'alerts', title: t('settings.alertsTitle'), desc: t('set.menuAlertsDesc'), icon: 'notifications', color: '#FF9500' },
+    { id: 'security', title: t('settings.securityTitle'), desc: t('set.menuSecurityDesc'), icon: 'lock-closed', color: '#34C759' },
+    { id: 'tools', title: t('set.menuTools'), desc: t('set.menuToolsDesc'), icon: 'construct-outline', color: '#007AFF' },
+    { id: 'data', title: t('set.menuData'), desc: t('set.menuDataDesc'), icon: 'server', color: '#007AFF' },
+    { id: 'support', title: t('set.menuSupport'), desc: t('set.menuSupportDesc'), icon: 'information-circle-outline', color: '#AF52DE' },
+    { id: 'trash', title: t('set.trash'), desc: t('set.trashSubtitle'), icon: 'trash-outline', color: '#FF3B30' },
+  ];
+
+  /** Menu sau khi lọc theo ô tìm kiếm (không dấu) */
+  const visibleMenus = MENUS.filter((m) => {
+    const q = stripMarks(menuQuery.trim());
+    if (!q) return true;
+    return stripMarks(`${m.title} ${m.desc}`).includes(q);
+  });
+
+  /** Mở bảng của nhóm + cuộn về đầu màn (panel render thay vị trí danh sách) */
+  function openPanel(id: PanelId) {
+    setActivePanel(id);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }
+
+  /** Quay lại danh sách menu từ bảng của nhóm */
+  function goBackToMenus() {
+    setActivePanel(null);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }
+
+  /** Quét mã QR từ bảng Công cụ: dùng đúng BarcodeScannerModal + lookup
+      của Trang chủ — đồ → chi tiết đồ, vị trí → chi tiết vị trí, mã lạ → popup. */
+  async function handleToolsScanned(data: string) {
+    const foundItem = await findItemByBarcode(data);
+    if (foundItem) { router.push(`/item/${foundItem.id}`); return; }
+    const foundLoc = await findLocationByQrCode(data);
+    if (foundLoc) { router.push(`/location/${foundLoc.id}`); return; }
+    showInfo(t('set.toolScan'), t('set.scanNotFound'));
+  }
+
+  /** Tiêu đề bảng đang mở (tra từ MENUS để khỏi hardcode thêm key) */
+  const panelTitle = MENUS.find((m) => m.id === activePanel)?.title ?? '';
+
+  return (
+    <ScrollView ref={scrollRef} style={[styles.screen, { paddingTop: 54 }]} contentContainerStyle={[styles.content, { paddingBottom: TAB_BAR_CLEARANCE }]}>
+      {/* Màn chính: tiêu đề lớn + ô tìm kiếm + thẻ tài khoản. Bảng của nhóm:
+          header riêng có nút quay lại về danh sách menu. */}
+      {activePanel === null ? (
+        <View style={{ gap: 8 }}>
+          <Text style={{ fontSize: 34, fontWeight: '800', color: Colors.text }}>{t('set.title')}</Text>
+          <View style={[styles.searchBar, { marginTop: 8 }]}>
+            <Ionicons name="search" size={20} color={Colors.subtext} />
+            <TextInput
+              style={{ flex: 1, fontSize: 15, color: Colors.text }}
+              value={menuQuery}
+              onChangeText={setMenuQuery}
+              placeholder={t('set.searchPlaceholder')}
+              placeholderTextColor={Colors.subtext}
+              autoCorrect={false}
+            />
+            {menuQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setMenuQuery('')} hitSlop={6}>
+                <Ionicons name="close-circle" size={20} color={Colors.subtext} />
+              </TouchableOpacity>
+            )}
+          </View>
+          {/* Thẻ tài khoản: avatar bền từ app_kv (cùng cách màn Home dùng);
+              chưa có avatar thì vòng tím + icon người. Chỉ hiển thị.
+              v83: đã đăng nhập Google (đổi mã) thì thẻ phải cho thấy rõ
+              tài khoản đó — huy hiệu logo Google góc avatar + dòng email
+              riêng dưới dòng gói; chưa đăng nhập thì giữ nguyên như cũ. */}
+          <View style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }]}>
+            <View style={{ position: 'relative' }}>
+              <View style={{ width: 56, height: 56, borderRadius: 28, overflow: 'hidden', backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' }}>
+                {avatarUri ? (
+                  <Image source={{ uri: avatarUri }} style={{ width: 56, height: 56 }} />
+                ) : (
+                  <Ionicons name="person" size={28} color="#fff" />
+                )}
+              </View>
+              {promoConnectedState && (
+                <View style={{ position: 'absolute', right: -2, bottom: -2, width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 1, borderColor: '#E5E0F5', alignItems: 'center', justifyContent: 'center' }}>
+                  <Image source={require('../../../assets/images/google-g.png')} style={{ width: 15, height: 15 }} />
+                </View>
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={{ flex: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.accountTitle')}</Text>
+                <PlanBadge planId={planId} />
+              </View>
+              <Text style={{ fontSize: 12.5, color: Colors.subtext, marginTop: 2 }}>
+                {planId === 'PRO' ? t('plan.namePro') : t('set.planName')} · {t('set.accountLocal')}
+              </Text>
+              {promoConnectedState && promoEmail ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                  <Image source={require('../../../assets/images/google-g.png')} style={{ width: 16, height: 16 }} />
+                  <Text style={{ flex: 1, fontSize: 12.5, color: Colors.subtext }} numberOfLines={1} ellipsizeMode="middle">
+                    {promoEmail}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </View>
+      ) : (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+          <TouchableOpacity
+            onPress={goBackToMenus}
+            hitSlop={8}
+            style={{
+              width: 40, height: 40, borderRadius: 20, backgroundColor: '#fff',
+              alignItems: 'center', justifyContent: 'center', ...cardShadow,
+            }}
+          >
+            <Ionicons name="chevron-back" size={22} color={Colors.primaryDark} />
+          </TouchableOpacity>
+          <Text style={{ flex: 1, fontSize: 26, fontWeight: '800', color: Colors.text }}>{panelTitle}</Text>
+        </View>
+      )}
+
+      {/* Banner từ máy chủ (cấu hình từ xa): bảo trì + nhắc cập nhật. Chỉ màn chính. */}
+      {activePanel === null && maintenanceNotice ? (
+        <View style={{ backgroundColor: '#FEF3C7', borderRadius: 16, padding: 14, marginBottom: 6 }}>
+          <Text style={{ fontSize: 13.5, fontWeight: '700', color: '#7C2D12' }}>{maintenanceNotice}</Text>
+        </View>
+      ) : null}
+      {activePanel === null && updateRequired ? (
+        <View style={{ backgroundColor: '#FEF3C7', borderRadius: 16, padding: 14, marginBottom: 6 }}>
+          <Text style={{ fontSize: 13.5, fontWeight: '700', color: '#7C2D12' }}>
+            {t('set.updateAvailable', { v: updateRequired })}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Thẻ gói SmartStash: gói hiện tại + quyền lợi. Chỉ màn chính. */}
+      {activePanel === null && (
       <View
         style={{
           backgroundColor: Colors.deep, borderRadius: 24, padding: 18, gap: 8, overflow: 'hidden',
@@ -708,12 +1333,15 @@ export default function SettingsScreen() {
         <View pointerEvents="none" style={{ position: 'absolute', width: 150, height: 150, borderRadius: 75, backgroundColor: Colors.coral, opacity: 0.3, top: -75, right: -40 }} />
         <View pointerEvents="none" style={{ position: 'absolute', width: 100, height: 100, borderRadius: 50, backgroundColor: Colors.teal, opacity: 0.28, bottom: -55, left: -25 }} />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <View style={{ width: 46, height: 46, borderRadius: 16, backgroundColor: Colors.coral, alignItems: 'center', justifyContent: 'center' }}>
-            <Ionicons name="gift" size={23} color="#fff" />
+          {/* v84: icon gói khác hẳn nhau — Pro kim cương nền vàng cam,
+              Free khối nền xám tím (trước đây cả hai cùng icon quà tặng) */}
+          <View style={{ width: 46, height: 46, borderRadius: 16, backgroundColor: planId === 'PRO' ? '#FF9F43' : '#6E6890', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name={planId === 'PRO' ? 'diamond' : 'cube-outline'} size={23} color="#fff" />
           </View>
-          <Text style={{ fontSize: 17, fontWeight: '800', color: '#fff' }}>
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 17, fontWeight: '800', color: '#fff' }}>
             {planId === 'PRO' ? t('plan.namePro') : t('set.planName')}
           </Text>
+          <PlanBadge planId={planId} dark />
         </View>
         <Text style={{ color: Colors.onDarkMuted, fontSize: 13, lineHeight: 19 }}>
           {(() => {
@@ -743,8 +1371,7 @@ export default function SettingsScreen() {
             Công tắc cấu hình từ xa (remoteConfigService.selfPromoEnabled):
             TẮT → ẩn hẳn dòng nhập mã tự quản và thay bằng lối "Đổi mã
             Google Play" mở thẳng trang redeem của Google, để lối đổi mã
-            Play (vốn chỉ nằm trong modal promo) vẫn tới được như cũ —
-            đúng chốt chặn Mảng 3: bản chưa có máy chủ chỉ giữ lối Play */}
+            Play (vốn chỉ nằm trong modal promo) vẫn tới được như cũ. */}
         {selfPromoEnabled ? (
           <TouchableOpacity
             onPress={openPromoModal}
@@ -766,40 +1393,66 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={15} color={Colors.onDarkMuted} />
           </TouchableOpacity>
         )}
-        <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.16)', marginTop: 6 }} />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 14, fontWeight: '700', color: '#fff' }}>{t('plan.simToggle')}</Text>
-            <Text style={{ fontSize: 12, color: Colors.onDarkMuted, marginTop: 1 }}>{t('plan.simNote')}</Text>
-          </View>
-          <Switch
-            value={planId === 'PRO'}
-            onValueChange={(v) => { handleSimToggle(v).catch(() => {}); }}
-            trackColor={{ false: 'rgba(255,255,255,0.25)', true: Colors.coral }}
-            thumbColor="#fff"
-          />
-        </View>
       </View>
+      )}
 
+      {/* Danh sách 8 menu to ở màn chính (lọc theo ô tìm kiếm) */}
+      {activePanel === null && (
+        <View style={{ gap: 12 }}>
+          {visibleMenus.map((m) => (
+            <TouchableOpacity
+              key={m.id}
+              onPress={() => openPanel(m.id)}
+              activeOpacity={0.8}
+              style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16 }]}
+            >
+              <IOSTile icon={m.icon} color={m.color} size={52} iconSize={26} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 17, fontWeight: '700', color: Colors.text }}>{m.title}</Text>
+                <Text style={{ fontSize: 13, color: Colors.subtext, marginTop: 2 }}>{m.desc}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.subtext} />
+            </TouchableOpacity>
+          ))}
+          {visibleMenus.length === 0 && (
+            <Text style={{ color: Colors.subtext, fontSize: 14, textAlign: 'center', marginTop: 8 }}>{t('set.searchEmpty')}</Text>
+          )}
+        </View>
+      )}
+
+      {activePanel === 'data' && (
       <View style={[styles.card, { gap: 7 }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <IconTile icon="server" color={Colors.teal} size={46} iconSize={23} />
-          <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.dataTitle')}</Text>
+          <IOSTile icon="server" color={Colors.teal} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.dataTitle')}</Text>
         </View>
-        <Text style={{ color: Colors.subtext, fontSize: 13 }}>
-          Schema v{SCHEMA_VERSION} · FTS5: {ftsAvailable ? t('set.ftsOn') : t('set.ftsOff')}
+        <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
+          {t('set.dataLocal')}
         </Text>
         <Text style={{ color: Colors.subtext, fontSize: 13 }}>
-          {t('set.dataNote')}
+          {t('set.dataStats', { a: activeCount, l: locCount })}
         </Text>
+        <Text style={{ color: Colors.subtext, fontSize: 13 }}>
+          {t('set.dataTech', { v: SCHEMA_VERSION, s: ftsAvailable ? t('set.ftsOn') : t('set.ftsOff') })}
+        </Text>
+        <TouchableOpacity
+          onPress={() => openPanel('backup')}
+          activeOpacity={0.7}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}
+        >
+          <Ionicons name="shield-checkmark-outline" size={16} color={Colors.primary} />
+          <Text style={{ flex: 1, fontSize: 13.5, fontWeight: '700', color: Colors.primary }}>{t('set.dataBackupLink')}</Text>
+          <Ionicons name="chevron-forward" size={15} color={Colors.subtext} />
+        </TouchableOpacity>
       </View>
-
+      )}
 
       {/* Ứng dụng: ngôn ngữ (segmented control) + đặt lại lịch nhắc, gộp 1 thẻ */}
+      {activePanel === 'app' && (
       <View style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <IconTile icon="apps" color={Colors.sky} size={46} iconSize={23} />
-          <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.app')}</Text>
+          <IOSTile icon="apps" color={Colors.sky} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.app')}</Text>
         </View>
         <Text style={{ fontSize: 15, fontWeight: '700', color: Colors.text }}>{t('set.langTitle')}</Text>
         <View style={{ flexDirection: 'row', backgroundColor: Colors.chipBg, borderRadius: 12, padding: 4, gap: 4 }}>
@@ -824,7 +1477,7 @@ export default function SettingsScreen() {
         </View>
         <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <IconTile icon="notifications" color={Colors.orange} size={44} iconSize={22} />
+          <IOSTile icon="notifications" color={Colors.orange} size={44} iconSize={22} />
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.notifTitle')}</Text>
             <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.notifReschedule')}</Text>
@@ -836,13 +1489,28 @@ export default function SettingsScreen() {
           icon="notifications-outline"
           onPress={async () => { await rescheduleAllReminders(); showInfo(t('set.notifDoneTitle'), t('set.notifDoneMsg')); }}
         />
+        <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
+          onPress={() => { Linking.openSettings().catch(() => {}); }}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="shield-outline" color="#007AFF" size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.appPerms')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.appPermsDesc')}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
       </View>
+      )}
 
       {/* Cảnh báo 4 mức: 2 ngưỡng ngày dạng segmented + công tắc thông báo theo loại */}
+      {activePanel === 'alerts' && (
       <View style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <IconTile icon="notifications" color={Colors.red} size={46} iconSize={23} />
-          <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('settings.alertsTitle')}</Text>
+          <IOSTile icon="notifications" color={Colors.red} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('settings.alertsTitle')}</Text>
         </View>
         {alertCfgState && (
           <>
@@ -884,12 +1552,36 @@ export default function SettingsScreen() {
           </>
         )}
       </View>
+      )}
 
       {/* Bảo mật: khoá app bằng PIN + sinh trắc (Phase 6) */}
+      {activePanel === 'security' && (
+      <>
+      {/* Thẻ tổng quan bảo mật: chip trạng thái cập nhật theo công tắc thật */}
+      <View style={[styles.card, { gap: 10 }]}>
+        <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.secOverview')}</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          <View style={{ backgroundColor: Colors.chipBg, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 }}>
+            <Text style={{ fontSize: 12.5, fontWeight: '700', color: lockCfg?.lockEnabled ? Colors.green : Colors.subtext }}>
+              {lockCfg?.lockEnabled ? t('set.secLockOn') : t('set.secLockOff')}
+            </Text>
+          </View>
+          {bioAvail && (
+            <View style={{ backgroundColor: Colors.chipBg, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 }}>
+              <Text style={{ fontSize: 12.5, fontWeight: '700', color: lockCfg?.biometricEnabled ? Colors.green : Colors.subtext }}>
+                {lockCfg?.biometricEnabled ? t('set.secBioOn') : t('set.secBioOff')}
+              </Text>
+            </View>
+          )}
+          <View style={{ backgroundColor: Colors.chipBg, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 }}>
+            <Text style={{ fontSize: 12.5, fontWeight: '700', color: Colors.green }}>{t('set.secEncrypted')}</Text>
+          </View>
+        </View>
+      </View>
       <View style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <IconTile icon="lock-closed" color={Colors.primary} size={46} iconSize={23} />
-          <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('settings.securityTitle')}</Text>
+          <IOSTile icon="lock-closed" color={Colors.primary} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('settings.securityTitle')}</Text>
         </View>
         {lockCfg && (
           <>
@@ -908,19 +1600,40 @@ export default function SettingsScreen() {
             {lockCfg.lockEnabled && (
               <>
                 <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
-                <TouchableOpacity
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
-                  onPress={() => openPinModal('change')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '600', color: Colors.text }}>{t('settings.changePin')}</Text>
-                  <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
-                </TouchableOpacity>
+                {/* Thẻ PIN sinh động: dãy chấm che mã + chip trạng thái + nút đổi
+                    + "Quên PIN?" (mở cảnh báo quên PIN = xoá dữ liệu đã có).
+                    Dãy chấm chỉ là mặt nạ hiển thị — độ dài PIN thật (4–6 số)
+                    không lưu ở đâu nên không khẳng định số chữ số cụ thể. */}
+                <View style={{ backgroundColor: Colors.chipBg, borderRadius: 16, padding: 14, gap: 8 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: Colors.text }}>{t('set.pinTitle')}</Text>
+                  <Text style={{ fontSize: 22, letterSpacing: 6, color: Colors.text }}>••••••</Text>
+                  <View style={{ flexDirection: 'row' }}>
+                    <View style={{ backgroundColor: '#fff', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: Colors.green }}>{t('set.pinSet')}</Text>
+                    </View>
+                  </View>
+                  <AppButton
+                    title={t('settings.changePin')}
+                    variant="secondary"
+                    icon="key-outline"
+                    onPress={() => openPinModal('change')}
+                  />
+                  <Text style={{ fontSize: 12, color: Colors.subtext, lineHeight: 17 }}>{t('set.pinHint')}</Text>
+                  <TouchableOpacity
+                    onPress={() => showInfo(t('settings.securityTitle'), t('lock.forgotWarning'))}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.danger }}>{t('set.pinForgot')}</Text>
+                  </TouchableOpacity>
+                </View>
                 {bioAvail && (
                   <>
                     <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '600', color: Colors.text }}>{t('settings.biometric')}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 14.5, fontWeight: '600', color: Colors.text }}>{t('settings.biometric')}</Text>
+                        <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.secBioDesc')}</Text>
+                      </View>
                       <Switch
                         value={lockCfg.biometricEnabled}
                         onValueChange={async (v) => setLockCfg(await setLockConfig({ biometricEnabled: v }))}
@@ -932,6 +1645,7 @@ export default function SettingsScreen() {
                 )}
                 <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
                 <Text style={{ fontSize: 15, fontWeight: '700', color: Colors.text }}>{t('settings.lockTimeout')}</Text>
+                <Text style={{ fontSize: 12, color: Colors.subtext }}>{t('set.secTimeoutDesc')}</Text>
                 <DaySegmented
                   value={lockCfg.lockTimeoutSec}
                   options={[...LOCK_TIMEOUT_CHOICES]}
@@ -944,12 +1658,27 @@ export default function SettingsScreen() {
           </>
         )}
       </View>
-
+      {/* Khối thông tin: dữ liệu được bảo vệ như thế nào (đúng kiến trúc app thật) */}
+      <View style={[styles.card, { gap: 8 }]}>
+        <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.secHowTitle')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secHowPin')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secHowBackup')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secHowDrive')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secHowLocal')}</Text>
+      </View>
+      <View style={[styles.card, { gap: 8 }]}>
+        <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.secTipsTitle')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secTip1')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secTip2')}</Text>
+        <Text style={{ fontSize: 13, color: Colors.subtext, lineHeight: 19 }}>• {t('set.secTip3')}</Text>
+      </View>
+      </>)}
       {/* Sao lưu & khôi phục bằng file mã hoá (Phase 5 lõi) */}
+      {activePanel === 'backup' && (
       <View style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <IconTile icon="cloud-upload-outline" color={Colors.sky} size={46} iconSize={23} />
-          <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('backup.title')}</Text>
+          <IOSTile icon="cloud-upload-outline" color={Colors.sky} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('backup.title')}</Text>
         </View>
         <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
           {t('backup.desc')}
@@ -969,34 +1698,24 @@ export default function SettingsScreen() {
           onPress={() => { handlePickImportFile().catch(() => {}); }}
         />
         <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
-        {/* Điểm nối mây Pro (Phase 6): BYOC Google Drive là mặc định, mây SmartStash dành cho gói Pro — sắp có */}
-        <TouchableOpacity
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
-          onPress={() => showInfo(t('plan.upgradeTitle'), t('plan.revenueCatSoon'))}
-          activeOpacity={0.7}
-        >
-          <IconTile icon="cloud-outline" color={Colors.subtext} size={44} iconSize={22} />
-          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('plan.cloudRow')}</Text>
-          <View style={{ backgroundColor: Colors.chipBg, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 }}>
-            <Text style={{ fontSize: 11, fontWeight: '700', color: Colors.primary }}>{t('plan.proSoonBadge')}</Text>
-          </View>
-        </TouchableOpacity>
-
-        <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
         {/* Google Drive của khách (BYOC): khách kết nối Drive của CHÍNH họ —
             app chỉ kích hoạt mục này khi đã cấu hình Client ID (xem config.ts) */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <IconTile icon="logo-google" color={Colors.sky} size={44} iconSize={22} />
+          <IOSTile icon="logo-google" color={Colors.sky} size={44} iconSize={22} />
           <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('drive.title')}</Text>
         </View>
-        {!driveConfigured ? (
+        {!driveBackupEnabled ? (
+          /* v84: Drive đang khoá bởi quản trị — chỉ hiện thông báo khoá,
+             không hiện nút kết nối (bấm vào cũng không đăng nhập được). */
+          <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('drive.lockedMsg')}</Text>
+        ) : !driveConfigured ? (
           <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('drive.notConfigured')}</Text>
         ) : !driveConnectedState ? (
           <>
             <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('drive.desc')}</Text>
             <DriveConnectButton
-              onConnected={() => { load().catch(() => {}); }}
-              onError={(e) => showInfo(t('drive.title'), driveErrorMessage(e))}
+              loading={driveBusy}
+              onConnect={() => { handleDriveConnect().catch(() => {}); }}
             />
           </>
         ) : (
@@ -1007,6 +1726,16 @@ export default function SettingsScreen() {
                 {driveEmail ? t('drive.connectedAs', { email: driveEmail }) : t('drive.connected')}
               </Text>
             </View>
+            <AppButton
+              title={t('promo.switchAccount')}
+              variant="secondary"
+              icon="swap-horizontal-outline"
+              loading={googleSwitchBusy}
+              onPress={() => { handleSwitchGoogleAccount('drive').catch(() => {}); }}
+            />
+            <Text style={{ color: Colors.subtext, fontSize: 12.5, lineHeight: 18 }}>
+              {t('promo.sharedAccountNote')}
+            </Text>
             {!driveHasKey ? (
               <>
                 <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('drive.needKeyDesc')}</Text>
@@ -1071,12 +1800,111 @@ export default function SettingsScreen() {
           </>
         )}
       </View>
+      )}
 
-      {/* Dữ liệu thử nghiệm: seed ~30 món mẫu để trải nghiệm app */}
+      {/* Lưu trữ trên Cloud của Smartstash: sao lưu mã hoá lên Worker — chỉ dành cho gói Pro (mở bằng mã khuyến mại cho tới khi paywall lên sóng) */}
+      {activePanel === 'backup' && (
       <View style={[styles.card, { gap: 12 }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-          <IconTile icon="flask-outline" color={Colors.coral} size={46} iconSize={23} />
-          <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('settings.demoTitle')}</Text>
+          <IOSTile icon="cloud-outline" color={Colors.sky} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.coral }}>{t('cloud.title')}</Text>
+        </View>
+        <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('cloud.desc')}</Text>
+        {!cloudBackupEnabled ? (
+          /* v84: mây đang khoá bởi quản trị — chỉ hiện thông báo khoá,
+             không hiện chọn gói / sao lưu / khôi phục cho bất kỳ gói nào. */
+          <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('cloud.lockedMsg')}</Text>
+        ) : planId !== 'PRO' ? (
+          <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('cloud.proOnly')}</Text>
+        ) : (
+          <>
+            <Text style={{ fontSize: 14.5, fontWeight: '600', color: Colors.text }}>{t('cloud.tierLabel')}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {storagePlans.map((p) => (
+                <TouchableOpacity
+                  key={p.sizeMb}
+                  onPress={() => { handleCloudTierChange(p.sizeMb).catch(() => {}); }}
+                  disabled={cloudBusy}
+                  style={{
+                    paddingHorizontal: 14,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    backgroundColor: cloudTier === p.sizeMb ? Colors.primary : Colors.chipBg,
+                  }}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: cloudTier === p.sizeMb ? '#fff' : Colors.text }}>
+                    {p.sizeMb >= 1000 ? `${p.sizeMb / 1000} GB` : `${p.sizeMb} MB`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={{ gap: 4 }}>
+              {storagePlans.map((p) => {
+                const sizeLabel = p.sizeMb >= 1000 ? `${p.sizeMb / 1000} GB` : `${p.sizeMb} MB`;
+                const current = cloudTier === p.sizeMb;
+                return (
+                  <Text
+                    key={p.sizeMb}
+                    style={{ fontSize: 13, color: current ? Colors.text : Colors.subtext, fontWeight: current ? '700' : '400' }}
+                  >
+                    {sizeLabel} — {t('cloud.priceYear', { price: p.priceVnd.toLocaleString(lang === 'vi' ? 'vi-VN' : 'en-US') })}{current ? ` · ${t('cloud.currentPlan')}` : ''}
+                  </Text>
+                );
+              })}
+            </View>
+            <Text style={{ fontSize: 12.5, color: Colors.subtext }}>
+              {cloudUsage
+                ? t('cloud.usage', { used: formatBytes(cloudUsage.used_bytes), quota: formatBytes(cloudUsage.quota_bytes) })
+                : t('cloud.usageUnknown')}
+            </Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext }}>{t('cloud.filesNote')}</Text>
+            <AppButton
+              title={t('cloud.backupNowBtn')}
+              variant="secondary"
+              icon="cloud-upload-outline"
+              loading={cloudBusy}
+              onPress={() => openCloudPwModal('upload')}
+            />
+            <AppButton
+              title={t('cloud.refreshBtn')}
+              variant="secondary"
+              icon="refresh-outline"
+              disabled={cloudBusy}
+              onPress={() => { refreshCloudUsage().catch(() => {}); }}
+            />
+            {cloudUsage && cloudUsage.files.length > 0 && (
+              <>
+                <Text style={{ fontSize: 14.5, fontWeight: '600', color: Colors.text }}>
+                  {t('cloud.restoreList', { n: cloudUsage.files.length })}
+                </Text>
+                {cloudUsage.files.map((f) => (
+                  <TouchableOpacity
+                    key={f.name}
+                    onPress={() => openCloudPwModal('restore', f.name)}
+                    disabled={cloudBusy}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                  >
+                    <Ionicons name="document-outline" size={17} color={Colors.subtext} />
+                    <Text style={{ flex: 1, fontSize: 13.5, color: Colors.text }}>{f.name}</Text>
+                    <Text style={{ fontSize: 12, color: Colors.subtext }}>{formatBytes(f.size)}</Text>
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+            {cloudUsage && cloudUsage.files.length === 0 && (
+              <Text style={{ fontSize: 12.5, color: Colors.subtext }}>{t('cloud.noBackups')}</Text>
+            )}
+          </>
+        )}
+      </View>
+      )}
+
+      {/* Dữ liệu thử nghiệm: seed ~30 món mẫu để trải nghiệm app */}
+      {activePanel === 'data' && (
+      <View style={[styles.card, { gap: 12 }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
+          <IOSTile icon="flask-outline" color={Colors.coral} size={46} iconSize={23} />
+          <Text style={{ flex: 1, flexShrink: 1, fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('settings.demoTitle')}</Text>
         </View>
         <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
           {t('settings.demoDesc')}
@@ -1105,74 +1933,311 @@ export default function SettingsScreen() {
           />
         )}
       </View>
+      )}
 
-      {/* Menu chức năng: hàng có icon tile + tiêu đề + chevron, ngăn hairline */}
+      {/* Công cụ: mô tả đầu bảng + các hàng + thẻ mẹo cuối bảng.
+          Hàng Quét mã QR dùng đúng BarcodeScannerModal + lookup của Trang chủ. */}
+      {activePanel === 'tools' && (
+      <>
+      <View style={[styles.card, { gap: 6 }]}>
+        <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.text }}>{t('set.toolsIntro')}</Text>
+        <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('set.toolsIntroDesc')}</Text>
+      </View>
       <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
         <TouchableOpacity
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16 }}
           onPress={handleExportCsv}
           disabled={exporting}
           activeOpacity={0.7}
         >
-          <IconTile icon="download" color={Colors.teal} size={44} iconSize={22} />
-          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>
-            {exporting ? t('set.exporting') : t('set.exportCsv')}
-          </Text>
+          <IOSTile icon="download" color={Colors.teal} size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>
+              {exporting ? t('set.exporting') : t('set.exportCsv')}
+            </Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.toolCsvDesc')}</Text>
+          </View>
           <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(15,181,168,0.11)', alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="chevron-forward" size={16} color={Colors.teal} />
           </View>
         </TouchableOpacity>
         <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
         <TouchableOpacity
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16 }}
+          onPress={() => setShowScanner(true)}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="scan-outline" color="#007AFF" size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.toolScan')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.toolScanDesc')}</Text>
+          </View>
+          <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(0,122,255,0.11)', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name="chevron-forward" size={16} color="#007AFF" />
+          </View>
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16 }}
           onPress={() => router.push('/labels')}
           activeOpacity={0.7}
         >
-          <IconTile icon="qr-code-outline" color={Colors.primary} size={44} iconSize={22} />
-          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>
-            {t('settings.printLabels')}
-          </Text>
+          <IOSTile icon="qr-code-outline" color={Colors.primary} size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>
+              {t('settings.printLabels')}
+            </Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.toolQrDesc')}</Text>
+          </View>
           <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(109,40,217,0.11)', alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
           </View>
         </TouchableOpacity>
         <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
         <TouchableOpacity
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16 }}
           onPress={() => router.push('/onboarding')}
           activeOpacity={0.7}
         >
-          <IconTile icon="play-circle" color={Colors.coral} size={44} iconSize={22} />
-          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.replayIntro')}</Text>
+          <IOSTile icon="play-circle" color={Colors.coral} size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.replayIntro')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.toolReplayDesc')}</Text>
+          </View>
           <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,90,118,0.11)', alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="chevron-forward" size={16} color={Colors.coral} />
           </View>
         </TouchableOpacity>
       </View>
+      <View style={[styles.card, { gap: 6 }]}>
+        <Text style={{ fontSize: 15, fontWeight: '800', color: Colors.text }}>{t('set.toolsTipTitle')}</Text>
+        <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('set.toolsTipBody')}</Text>
+      </View>
+      </>
+      )}
 
+      {/* Hỗ trợ & thông tin: 2 nhóm con — Hỗ trợ và Thông tin.
+          Hàng Đánh giá Play vẫn chưa có (chưa có trang Play). Privacy/Terms
+          mở màn hình trong app (v71) thay vì link web vì chưa hosting. */}
+      {activePanel === 'support' && (
+      <>
+      <Text style={{ fontSize: 15, fontWeight: '800', color: Colors.text }}>{t('set.supGroupSupport')}</Text>
+      <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => router.push('/guide')}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="book-outline" color={Colors.sky} size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('guide.title')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('set.toolGuideDesc')}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => router.push('/faq')}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="help-circle-outline" color="#007AFF" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supFaq')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => { Linking.openURL(`mailto:dungnt.apps@gmail.com?subject=${encodeURIComponent(t('set.supFeedbackSubject'))}`).catch(() => {}); }}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="chatbubble-outline" color="#34C759" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supFeedback')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => { handleCheckUpdate().catch(() => {}); }}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="refresh-outline" color="#FF9500" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supCheckTitle')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => router.push('/changelog')}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="sparkles-outline" color="#AF52DE" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supChangelog')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => { Share.share({ message: t('set.supShareMsg') }).catch(() => {}); }}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="share-social-outline" color="#5AC8FA" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supShare')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => router.push('/privacy')}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="shield-checkmark-outline" color="#34C759" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supPrivacy')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => router.push('/terms')}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="document-text-outline" color="#FF9500" size={44} iconSize={22} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supTerms')}</Text>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+      </View>
+      <Text style={{ fontSize: 15, fontWeight: '800', color: Colors.text, marginTop: 4 }}>{t('set.supGroupInfo')}</Text>
+      <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}>
+          <IOSTile icon="cube-outline" color="#AF52DE" size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>SmartStash</Text>
+            {appVersion ? (
+              <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('about.version', { v: appVersion })}</Text>
+            ) : null}
+          </View>
+        </View>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => { Linking.openURL('mailto:dungnt.apps@gmail.com').catch(() => {}); }}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="mail-outline" color="#007AFF" size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('about.supportEmail')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>dungnt.apps@gmail.com</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA', marginLeft: 70, marginRight: 14 }} />
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}
+          onPress={() => { Linking.openURL('tel:+85588550000').catch(() => {}); }}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="call-outline" color="#34C759" size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('set.supPhone')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>+85588550000</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+      </View>
+      </>
+      )}
+
+      {activePanel === 'trash' && (
       <View style={{ gap: 10 }}>
         <SectionTitle title={t('set.trash')} subtitle={t('set.trashSubtitle')} color={Colors.red} />
         {trash.length === 0 ? (
           <Text style={{ color: Colors.subtext, fontSize: 13 }}>{t('set.trashEmpty')}</Text>
         ) : (
-          trash.map((i) => (
-            <View key={i.id} style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12 }]}>
-              <IconTile icon="trash-outline" color={Colors.subtext} size={42} iconSize={21} />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: Colors.text }}>{i.name}</Text>
-              <TouchableOpacity
-                style={[styles.buttonSecondary, { paddingVertical: 8, paddingHorizontal: 12 }]}
-                onPress={async () => { await restoreItem(i.id); bump(); }}
-              >
-                <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('set.restore')}</Text>
-              </TouchableOpacity>
+          <>
+            <View style={[styles.card, { gap: 10 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (trashSelected.length === trash.length) setTrashSelected([]);
+                    else setTrashSelected(trash.map((i) => i.id));
+                  }}
+                  activeOpacity={0.8}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                >
+                  <Ionicons
+                    name={trashSelected.length === trash.length ? 'checkbox' : 'square-outline'}
+                    size={20}
+                    color={Colors.primary}
+                  />
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.text }}>
+                    {trashSelected.length === trash.length ? t('set.trashDeselectAll') : t('set.trashSelectAll')}
+                  </Text>
+                </TouchableOpacity>
+                <Text style={{ flex: 1, textAlign: 'right', fontSize: 13, color: Colors.subtext }}>
+                  {t('set.trashSelected', { n: trashSelected.length })}
+                </Text>
+              </View>
+              <AppButton
+                title={t('set.trashDeleteSelected', { n: trashSelected.length })}
+                variant="danger"
+                icon="trash-outline"
+                disabled={trashSelected.length === 0}
+                onPress={() => requestTrashDelete(trashSelected)}
+              />
             </View>
-          ))
+            {trash.map((i) => {
+              const selected = trashSelected.includes(i.id);
+              return (
+                <TouchableOpacity
+                  key={i.id}
+                  activeOpacity={0.85}
+                  onPress={() => toggleTrashSelect(i.id)}
+                  style={[styles.card, {
+                    flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12,
+                    backgroundColor: selected ? Colors.chipBg : undefined,
+                  }]}
+                >
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={21}
+                    color={selected ? Colors.primary : Colors.subtext}
+                  />
+                  <IOSTile icon="trash-outline" color={Colors.subtext} size={42} iconSize={21} />
+                  <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: Colors.text }}>{i.name}</Text>
+                  <TouchableOpacity
+                    style={[styles.buttonSecondary, { paddingVertical: 8, paddingHorizontal: 12 }]}
+                    onPress={async () => { await handleTrashRestore(i.id); }}
+                  >
+                    <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('set.restore')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ padding: 6 }}
+                    hitSlop={6}
+                    onPress={() => requestTrashDelete([i.id])}
+                  >
+                    <Ionicons name="trash-outline" size={19} color={Colors.danger} />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              );
+            })}
+          </>
         )}
       </View>
+      )}
 
+      {activePanel === null && (
       <Text style={{ color: Colors.subtext, fontSize: 12, textAlign: 'center', marginTop: 12 }}>
-        {t('set.footer')}
+        {t('set.footer', { v: appVersion ?? '0.1.0' })}
       </Text>
+      )}
+
+      {/* Quét mã QR từ bảng Công cụ: dùng đúng BarcodeScannerModal của
+          Trang chủ — đồ → chi tiết đồ, vị trí → chi tiết vị trí. */}
+      <BarcodeScannerModal
+        visible={showScanner}
+        onClose={() => setShowScanner(false)}
+        onScanned={(data) => { handleToolsScanned(data).catch(() => {}); }}
+      />
 
       <AppPopup
         visible={showClearDemoPopup}
@@ -1180,6 +2245,16 @@ export default function SettingsScreen() {
         message={t('settings.demoDeleteConfirm')}
         confirm={{ label: t('settings.demoDelete'), danger: true, onConfirm: () => { handleClearDemoConfirm().catch(() => {}); } }}
         onClose={() => setShowClearDemoPopup(false)}
+      />
+
+      {/* Xác nhận xoá vĩnh viễn khỏi thùng rác (1 món hoặc nhiều món đã chọn):
+          không thể khôi phục, kể cả ảnh và lịch sử cho mượn của món. */}
+      <AppPopup
+        visible={trashDeletePending !== null}
+        title={trashDeletePending?.title ?? ''}
+        message={trashDeletePending?.message}
+        confirm={{ label: t('set.trashDeleteBtn'), danger: true, onConfirm: () => { handleTrashDeleteConfirm().catch(() => {}); } }}
+        onClose={() => setTrashDeletePending(null)}
       />
 
       <AppPopup
@@ -1236,6 +2311,98 @@ export default function SettingsScreen() {
 
       {/* Modal mật khẩu sao lưu — mật khẩu không được lưu ở bất cứ đâu.
           Các ô có nút mắt hiện/ẩn; chế độ tạo mới kèm khối cảnh báo lưu kỹ mật khẩu */}
+      {/* Modal nhập mã khuyến mãi qua máy chủ (v78): chưa đăng nhập Google
+          thì hiện khối đăng nhập trước, đăng nhập xong mới hiện ô nhập mã;
+          mục Google Play bên dưới mở trang redeem chính thức. */}
+      <Modal visible={promoOpen} transparent animationType="fade" onRequestClose={() => setPromoOpen(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setPromoOpen(false)}>
+          <Pressable style={[styles.card, styles.modalCard, { gap: 6 }]} onPress={() => {}}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: Colors.text }}>
+              {t('promo.title')}
+            </Text>
+            <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
+              {t('promo.desc')}
+            </Text>
+            {promoConnectedState ? (
+              <>
+                {promoEmail ? (
+                  <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
+                    {t('promo.currentAccount', { email: promoEmail })}
+                  </Text>
+                ) : null}
+                {/* v82: bỏ ghi chú "1 tài khoản chung cho đổi mã + Drive" —
+                    từ đây đổi mã dùng tài khoản riêng scope cơ bản, Drive
+                    đang tạm dừng nên không còn "đổi chung cả hai". */}
+                <AppButton
+                  title={t('promo.switchAccount')}
+                  icon="swap-horizontal-outline"
+                  variant="secondary"
+                  style={{ marginTop: 8 }}
+                  loading={googleSwitchBusy}
+                  onPress={() => { handleSwitchGoogleAccount('modal').catch(() => {}); }}
+                />
+                <Text style={[styles.label, { marginTop: 10 }]}>{t('promo.codeLabel')}</Text>
+                <TextInput
+                  style={[styles.input, promoError ? { borderColor: Colors.danger } : null]}
+                  value={promoCode}
+                  onChangeText={(v) => {
+                    setPromoCode(v);
+                    if (promoError) setPromoError(null);
+                  }}
+                  placeholder={t('promo.placeholder')}
+                  placeholderTextColor={Colors.faint}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  autoFocus
+                />
+                {promoError && (
+                  <Text style={{ color: Colors.danger, fontSize: 13, marginTop: 8 }}>{promoError}</Text>
+                )}
+                <AppButton
+                  title={t('promo.apply')}
+                  icon="ticket-outline"
+                  style={{ marginTop: 14 }}
+                  loading={promoBusy}
+                  onPress={() => { handlePromoApply().catch(() => {}); }}
+                />
+              </>
+            ) : (
+              <>
+                <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19, marginTop: 10 }}>
+                  {t('promo.loginRequired')}
+                </Text>
+                <Text style={{ color: Colors.subtext, fontSize: 12.5, lineHeight: 18 }}>
+                  {t('promo.loginNote')}
+                </Text>
+                {promoError && (
+                  <Text style={{ color: Colors.danger, fontSize: 13, marginTop: 8 }}>{promoError}</Text>
+                )}
+                <AppButton
+                  title={t('promo.loginBtn')}
+                  icon="logo-google"
+                  style={{ marginTop: 14 }}
+                  loading={promoLoginBusy}
+                  onPress={() => { handlePromoLogin().catch(() => {}); }}
+                />
+              </>
+            )}
+            <View style={{ height: 1, backgroundColor: Colors.border, marginTop: 16, marginBottom: 6 }} />
+            <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.text }}>{t('promo.playTitle')}</Text>
+            <Text style={{ color: Colors.subtext, fontSize: 12.5, lineHeight: 18 }}>{t('promo.playNote')}</Text>
+            <AppButton
+              title={t('promo.playBtn')}
+              icon="logo-google"
+              variant="secondary"
+              style={{ marginTop: 8 }}
+              onPress={openGooglePlayRedeem}
+            />
+            <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setPromoOpen(false)}>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal visible={pwModal !== null} transparent animationType="fade" onRequestClose={() => setPwModal(null)}>
         <Pressable style={styles.modalOverlay} onPress={() => setPwModal(null)}>
           <Pressable style={[styles.card, styles.modalCard, { gap: 6 }]} onPress={() => {}}>
@@ -1273,60 +2440,6 @@ export default function SettingsScreen() {
               onPress={pwModal?.mode === 'import' ? () => { handleImportPwSubmit().catch(() => {}); } : () => { handleExportSubmit().catch(() => {}); }}
             />
             <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setPwModal(null)}>
-              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* Modal nhập mã khuyến mãi tự quản của chủ app (promoService — seam
-          TODO backend/RevenueCat). Lỗi phân loại hiện tại chỗ trong modal.
-          Khu vực riêng cho mã Google Play: app không tự kiểm tra loại mã đó,
-          chỉ mở trang đổi mã chính thức của Google */}
-      <Modal visible={promoOpen} transparent animationType="fade" onRequestClose={() => setPromoOpen(false)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setPromoOpen(false)}>
-          <Pressable style={[styles.card, styles.modalCard, { gap: 6 }]} onPress={() => {}}>
-            <Text style={{ fontSize: 17, fontWeight: '800', color: Colors.text }}>
-              {t('promo.title')}
-            </Text>
-            <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
-              {t('promo.desc')}
-            </Text>
-            <Text style={[styles.label, { marginTop: 10 }]}>{t('promo.codeLabel')}</Text>
-            <TextInput
-              style={[styles.input, promoError ? { borderColor: Colors.danger } : null]}
-              value={promoCode}
-              onChangeText={(v) => {
-                setPromoCode(v);
-                if (promoError) setPromoError(null);
-              }}
-              placeholder={t('promo.placeholder')}
-              placeholderTextColor={Colors.faint}
-              autoCapitalize="characters"
-              autoCorrect={false}
-              autoFocus
-            />
-            {promoError && (
-              <Text style={{ color: Colors.danger, fontSize: 13, marginTop: 8 }}>{promoError}</Text>
-            )}
-            <AppButton
-              title={t('promo.apply')}
-              icon="ticket-outline"
-              style={{ marginTop: 14 }}
-              loading={promoBusy}
-              onPress={() => { handlePromoApply().catch(() => {}); }}
-            />
-            <View style={{ height: 1, backgroundColor: Colors.border, marginTop: 16, marginBottom: 6 }} />
-            <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.text }}>{t('promo.playTitle')}</Text>
-            <Text style={{ color: Colors.subtext, fontSize: 12.5, lineHeight: 18 }}>{t('promo.playNote')}</Text>
-            <AppButton
-              title={t('promo.playBtn')}
-              icon="logo-google"
-              variant="secondary"
-              style={{ marginTop: 8 }}
-              onPress={openGooglePlayRedeem}
-            />
-            <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setPromoOpen(false)}>
               <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
             </TouchableOpacity>
           </Pressable>
@@ -1468,6 +2581,69 @@ export default function SettingsScreen() {
               onPress={() => { handleDrivePwSubmit().catch(() => {}); }}
             />
             <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setDrivePwModal(null)}>
+              <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Xác nhận GHI ĐÈ toàn bộ dữ liệu trước khi khôi phục từ mây (danger) */}
+      <AppPopup
+        visible={showCloudOverwrite}
+        title={t('backup.overwriteTitle')}
+        message={t('backup.overwriteMsg')}
+        confirm={{
+          label: t('backup.overwriteConfirm'),
+          danger: true,
+          onConfirm: () => { handleCloudRestoreConfirm().catch(() => {}); },
+        }}
+        onClose={() => {
+          setShowCloudOverwrite(false);
+          setPendingCloudRestore(null);
+        }}
+      />
+
+      {/* Modal mật khẩu sao lưu mây — mật khẩu không được lưu ở bất cứ đâu */}
+      <Modal visible={cloudPwModal !== null} transparent animationType="fade" onRequestClose={() => setCloudPwModal(null)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setCloudPwModal(null)}>
+          <Pressable style={[styles.card, styles.modalCard, { gap: 6 }]} onPress={() => {}}>
+            <Text style={{ fontSize: 17, fontWeight: '800', color: Colors.text }}>
+              {t('cloud.pwTitle')}
+            </Text>
+            <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>
+              {cloudPwModal?.mode === 'upload' ? t('backup.pwWarn') : (cloudPwModal?.fileName ?? '')}
+            </Text>
+            {cloudPwModal?.mode === 'upload' && <PasswordWarnBox text={t('backup.passwordWarn')} />}
+            <SecretField
+              label={t('backup.pwLabel')}
+              value={cloudPw}
+              onChangeText={setCloudPw}
+              visible={cloudPwShow}
+              onToggleVisible={() => setCloudPwShow((v) => !v)}
+              toggleLabel={cloudPwShow ? t('common.hide') : t('common.show')}
+              autoFocus
+            />
+            {cloudPwModal?.mode === 'upload' && (
+              <SecretField
+                label={t('backup.pwConfirmLabel')}
+                value={cloudPwConfirm}
+                onChangeText={setCloudPwConfirm}
+                visible={cloudPwShow}
+                onToggleVisible={() => setCloudPwShow((v) => !v)}
+                toggleLabel={cloudPwShow ? t('common.hide') : t('common.show')}
+              />
+            )}
+            {cloudPwError && (
+              <Text style={{ color: Colors.danger, fontSize: 13, marginTop: 10 }}>{cloudPwError}</Text>
+            )}
+            <AppButton
+              title={t('common.confirm')}
+              icon="lock-closed-outline"
+              style={{ marginTop: 14 }}
+              loading={cloudPwBusy}
+              onPress={() => { handleCloudPwSubmit().catch(() => {}); }}
+            />
+            <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setCloudPwModal(null)}>
               <Text style={{ fontSize: 13.5, fontWeight: '600', color: Colors.subtext }}>{t('common.cancel')}</Text>
             </TouchableOpacity>
           </Pressable>

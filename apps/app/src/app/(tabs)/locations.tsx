@@ -10,7 +10,7 @@ import { LOCATION_TYPE_COLORS, locationIconName, locationTypeLabel, tint } from 
 import { useT } from '@/i18n';
 import type { Location } from '@/types';
 import { LOCATION_TYPE_BY_DEPTH as TYPE_BY_DEPTH } from '@/types';
-import { listLocations, createLocation, itemsInLocation, countLocations, reorderLocations } from '@/db/queries';
+import { listLocations, createLocation, itemsInLocation, countRealLocations, reorderLocations } from '@/db/queries';
 import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
 import { uuid } from '@/utils';
 import { useAppStore } from '@/store/useAppStore';
@@ -385,7 +385,7 @@ export default function LocationsScreen() {
 
   async function handleCreate() {
     if (!newName.trim()) return;
-    const total = await countLocations();
+    const total = await countRealLocations();
     if (total >= getCurrentLimits().maxLocations) {
       showInfo(t('loc.limitTitle'), t('loc.limitLocMsg', { n: getCurrentLimits().maxLocations }));
       return;

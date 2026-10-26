@@ -1,14 +1,12 @@
-// Xác thực quản trị viên và chống lạm dụng cho endpoint đổi mã công khai.
+// Tiện ích xác thực dùng chung (không gắn với tài khoản quản trị).
 //
-// Nguyên tắc:
-// - Mọi endpoint GHI của quản trị đều yêu cầu header:
-//     Authorization: Bearer <ADMIN_TOKEN>
-//   ADMIN_TOKEN chỉ tồn tại dưới dạng Worker secret, không có trong code,
-//   không có trong PWA, không có trong repo.
 // - So sánh token bằng phép so sánh thời gian hằng số để tránh tấn công timing.
-// - Endpoint đổi mã (gọi từ app, không cần ADMIN_TOKEN) được giới hạn tốc độ
-//   bằng KV: tối đa 10 lần / 60 giây / tài khoản. Nếu chưa có KV (chạy local
-//   chưa cấu hình binding) thì bỏ qua giới hạn — chỉ dùng cho môi trường dev.
+// - Endpoint đổi mã (gọi từ app, không cần đăng nhập quản trị) được giới hạn
+//   tốc độ bằng KV: tối đa 10 lần / 60 giây / tài khoản. Nếu chưa có KV
+//   (chạy local chưa cấu hình binding) thì bỏ qua giới hạn — chỉ dùng cho
+//   môi trường dev.
+// - Xác thực tài khoản quản trị (mật khẩu PBKDF2, phiên, phân quyền) nằm ở
+//   src/lib/adminAuth.js; ADMIN_TOKEN chỉ còn dùng cho lần setup đầu tiên.
 
 const encoder = new TextEncoder();
 
@@ -20,15 +18,6 @@ export function timingSafeEqual(a, b) {
   let diff = 0;
   for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
   return diff === 0;
-}
-
-// Trả true nếu request mang đúng ADMIN_TOKEN.
-export function isAdmin(request, env) {
-  const header = request.headers.get('Authorization') || '';
-  if (!header.startsWith('Bearer ')) return false;
-  const token = header.slice('Bearer '.length).trim();
-  if (!env.ADMIN_TOKEN || !token) return false;
-  return timingSafeEqual(token, env.ADMIN_TOKEN);
 }
 
 // Giới hạn tốc độ đổi mã: tối đa `limit` lần trong `windowSec` giây cho một tài khoản.

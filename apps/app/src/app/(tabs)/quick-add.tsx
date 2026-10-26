@@ -8,7 +8,7 @@ import { styles, Colors, LocationPickerModal, AddTermModal, AppButton, Field, Qt
 import { categoryColor, categoryIcon, categoryLabel, conditionColor, conditionHint, conditionIcon, conditionLabel, tint, cardShadow, locationIconName, LOCATION_TYPE_COLORS, type IconName } from '@/theme';
 import type { ItemCategory, ItemCondition, Location } from '@/types';
 import { CATEGORY_LABELS } from '@/types';
-import { listLocations, createItem, updateItem, updateMediaPin, countActiveItems, findItemByBarcode, findLocationByQrCode } from '@/db/queries';
+import { listLocations, createItem, updateItem, updateMediaPin, countRealActiveItems, findItemByBarcode, findLocationByQrCode } from '@/db/queries';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { kvGet, kvSet } from '@/db/client';
 import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
@@ -314,7 +314,7 @@ export default function QuickAddScreen() {
       focusField(qtyFieldRef, qtyInputRef);
       return;
     }
-    const activeCount = await countActiveItems();
+    const activeCount = await countRealActiveItems();
     if (activeCount >= getCurrentLimits().maxActiveItems) {
       showInfo(
         t('loc.limitTitle'),

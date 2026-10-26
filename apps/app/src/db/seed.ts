@@ -8,10 +8,12 @@ export async function seedIfEmpty(): Promise<void> {
   if ((row?.c ?? 0) > 0) return;
 
   const home = await createLocation({ name: 'Nhà chính', type: 'PROPERTY' });
+  const warehouse = await createLocation({ name: 'Kho chính', type: 'PROPERTY' });
+  void warehouse;
   const living = await createLocation({ name: 'Phòng khách', type: 'ROOM', parent_id: home.id });
   const bedroom = await createLocation({ name: 'Phòng ngủ', type: 'ROOM', parent_id: home.id });
   const kitchen = await createLocation({ name: 'Bếp', type: 'ROOM', parent_id: home.id });
-  const storage = await createLocation({ name: 'Kho tầng 2', type: 'ROOM', parent_id: home.id });
+  const storage = await createLocation({ name: 'Kho tầng 1', type: 'ROOM', parent_id: home.id });
 
   const shelf = await createLocation({ name: 'Kệ sắt phải', type: 'FURNITURE', parent_id: storage.id });
   const medCabinet = await createLocation({ name: 'Tủ thuốc', type: 'FURNITURE', parent_id: bedroom.id });

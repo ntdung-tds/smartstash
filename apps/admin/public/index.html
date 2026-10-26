@@ -3,115 +3,479 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#6D28D9">
+<meta name="theme-color" content="#241254">
 <title>Quản trị SmartStash</title>
 <link rel="manifest" href="manifest.json">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header>
-  <h1>Quản trị SmartStash</h1>
-  <p class="sub">Mã khuyến mãi · Quyền lợi · Cấu hình · Sao lưu</p>
-</header>
+<!-- Khung chính: sidebar + topbar + một màn nội dung tại một thời điểm.
+     Màn đăng nhập/tạo tài khoản nằm ngoài khung, chỉ hiện khi chưa đăng nhập. -->
+<div id="shell" class="hidden">
+  <div id="drawerOverlay" class="hidden"></div>
+  <aside id="drawer" aria-label="Menu quản trị">
+    <div class="brand"><strong>SmartStash</strong><span>Quản trị</span></div>
+    <nav>
+      <div class="menu-group">Tổng quan</div>
+      <button type="button" data-tab="overview" class="active">📊 Tổng quan</button>
+      <button type="button" data-tab="revenue">💰 Doanh thu</button>
+      <div class="menu-group">Người dùng</div>
+      <button type="button" data-tab="appaccounts">👥 Tài khoản app</button>
+      <button type="button" data-tab="users" id="tabBtn-users">👤 Người dùng quản trị</button>
+      <div class="menu-group">Kinh doanh</div>
+      <button type="button" data-tab="promos">🎟️ Mã khuyến mãi</button>
+      <button type="button" data-tab="log">📜 Nhật ký đổi mã</button>
+      <button type="button" data-tab="grant" id="tabBtn-grant">🔑 Cấp / thu hồi</button>
+      <div class="menu-group">Vận hành</div>
+      <button type="button" data-tab="config" id="tabBtn-config">⚙️ Cấu hình app</button>
+      <!-- Menu con của Cấu hình app: đúng 3 phần trong trang cấu hình
+           tổng — bấm vào chỉ hiện phần đó, bấm "Cấu hình app" ở trên
+           thì hiện lại toàn bộ trang. Nút con dùng data-config-group
+           (không dùng data-tab) để không xung đột với chuyển màn chung. -->
+      <button type="button" class="sub" data-config-group="general">📋 Chung</button>
+      <button type="button" class="sub" data-config-group="backup">💾 Sao lưu &amp; ảnh</button>
+      <button type="button" class="sub" data-config-group="plans">📦 Gói lưu trữ</button>
+      <button type="button" data-tab="backups">🗄️ Sao lưu</button>
+      <button type="button" data-tab="audit">🛡️ Nhật ký kiểm toán</button>
+      <div class="menu-group">Hệ thống</div>
+      <button type="button" data-tab="settings">🔧 Cài đặt</button>
+    </nav>
+    <div class="drawer-foot">
+      <div id="drawerUserInfo" class="meta"></div>
+      <div class="meta">Chạy trên Cloudflare Workers + D1 + KV · Không có gói Family.</div>
+    </div>
+  </aside>
 
-<section id="settings" class="card">
-  <h2>Kết nối</h2>
-  <label>Địa chỉ Worker (API)
-    <input id="apiBase" type="url" placeholder="https://smartstash-admin.&lt;subdomain&gt;.workers.dev" autocomplete="off">
-  </label>
-  <label>ADMIN_TOKEN
-    <input id="adminToken" type="password" placeholder="Nhập 1 lần, lưu trên trình duyệt này" autocomplete="off">
-  </label>
-  <button id="saveSettings" type="button">Lưu kết nối</button>
-  <p class="hint">Token lưu ở localStorage của trình duyệt quản trị. Lớp bảo vệ chính thức là
-  Cloudflare Access đặt trước trang này khi triển khai (xem README).</p>
-  <p id="connStatus" class="status"></p>
-</section>
+  <div class="main-col">
+    <header class="topbar">
+      <button id="menuBtn" type="button" aria-label="Mở menu">☰</button>
+      <h1 id="pageTitle">Tổng quan</h1>
+      <div id="userBar" class="hidden">
+        <span id="userInfo"></span>
+        <button id="logoutBtn" type="button" class="secondary small">Đăng xuất</button>
+      </div>
+    </header>
 
-<nav id="tabs" aria-label="Màn quản trị">
-  <button type="button" data-tab="promos" class="active">Mã khuyến mãi</button>
-  <button type="button" data-tab="log">Nhật ký đổi mã</button>
-  <button type="button" data-tab="grant">Cấp / thu hồi</button>
-  <button type="button" data-tab="config">Cờ cấu hình</button>
-  <button type="button" data-tab="backups">Sao lưu</button>
-</nav>
+    <main>
+      <!-- Tổng quan -->
+      <section id="tab-overview" class="view">
+        <div class="page-head">
+          <div>
+            <h2>Tổng quan</h2>
+            <p class="page-desc">Số liệu vận hành theo thời gian thực từ máy chủ.</p>
+          </div>
+          <button id="reloadStats" type="button">Tải lại</button>
+        </div>
+        <div id="statGrid" class="kpi-grid"></div>
+        <div class="card">
+          <h3>Trạng thái hệ thống</h3>
+          <div id="healthBox"><p>Đang kiểm tra…</p></div>
+        </div>
+        <div class="chart-row">
+          <div class="card chart-card">
+            <h3>Tài khoản theo gói</h3>
+            <div id="planDonut"></div>
+          </div>
+          <div class="card chart-card">
+            <h3>Lượt đổi mã 14 ngày gần nhất</h3>
+            <div id="dailyChart"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Hoạt động gần đây</h3>
+          <div id="auditList"></div>
+        </div>
+        <div class="card">
+          <h3>Lượt đổi mã gần nhất</h3>
+          <div id="recentRedeemList"></div>
+        </div>
+      </section>
 
-<main>
-  <!-- Mã khuyến mãi -->
-  <section id="tab-promos" class="card tab">
-    <h2>Tạo mã mới</h2>
-    <form id="createPromoForm">
-      <label>Mã <input name="code" required placeholder="VD: TANG_THANG_1" autocomplete="off"></label>
-      <label>Quyền lợi <input name="entitlement" value="pro" required></label>
-      <label>Số ngày hiệu lực <input name="days" type="number" min="1" value="90" required></label>
-      <label>Tổng lượt tối đa <input name="max_uses" type="number" min="0" value="1" required></label>
-      <label>Đợt phát hành (campaign, tùy chọn) <input name="campaign" placeholder="VD: KOL_THANG_11"></label>
-      <label>Bắt đầu (tùy chọn) <input name="starts_at" type="datetime-local"></label>
-      <label>Hết hạn (tùy chọn) <input name="expires_at" type="datetime-local"></label>
-      <button type="submit">Tạo mã</button>
+      <!-- Doanh thu -->
+      <section id="tab-revenue" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Doanh thu</h2>
+            <p class="page-desc">Số liệu từ webhook RevenueCat — giá gộp, tách riêng từng loại tiền, chưa trừ phí Play 15%. Khi chưa nối RevenueCat, mục này trống, không bịa số.</p>
+          </div>
+          <button id="reloadRevenue" type="button">Tải lại</button>
+        </div>
+        <div id="revenueSummary" class="kpi-grid"></div>
+        <div class="card chart-card">
+          <h3>Doanh thu theo tháng</h3>
+          <div id="revenueChart"></div>
+        </div>
+        <div class="card">
+          <h3>Theo tháng</h3>
+          <div id="revenueMonthly"></div>
+        </div>
+        <div class="card">
+          <h3>Theo sản phẩm</h3>
+          <div id="revenueByProduct"></div>
+        </div>
+        <div class="card">
+          <h3>Theo cửa hàng / quốc gia</h3>
+          <div id="revenueByStore"></div>
+        </div>
+      </section>
+
+      <!-- Tài khoản app -->
+      <section id="tab-appaccounts" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Tài khoản app</h2>
+            <p class="page-desc">Người dùng cuối của ứng dụng, lọc theo gói hoặc tra cứu từng tài khoản.</p>
+          </div>
+          <button id="reloadAppAccounts" type="button">Tải lại</button>
+        </div>
+        <div class="card">
+          <label>Lọc theo gói
+            <select id="planFilter">
+              <option value="">Tất cả</option>
+              <option value="free">Miễn phí</option>
+              <option value="pro_paid">Pro trả phí</option>
+              <option value="pro_promo">Pro tặng</option>
+              <option value="pro">Pro (chung)</option>
+            </select>
+          </label>
+          <div id="appAccountList"></div>
+          <div id="appAccountPager" class="pager"></div>
+        </div>
+        <div class="card">
+          <h3>Tra cứu một tài khoản</h3>
+          <div class="filters">
+            <input id="accountSearch" type="text" placeholder="ID tài khoản hoặc email" autocomplete="off">
+            <button id="accountSearchBtn" type="button">Tra cứu</button>
+          </div>
+          <div id="accountDetail"></div>
+        </div>
+      </section>
+
+      <!-- Mã khuyến mãi -->
+      <section id="tab-promos" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Mã khuyến mãi</h2>
+            <p class="page-desc">Tạo mã, bật/tắt mã (cần lý do), xem lượt đổi của từng mã.</p>
+          </div>
+          <button id="reloadPromos" type="button">Tải lại</button>
+        </div>
+        <details id="createPromoWrap" class="card">
+          <summary><span>Tạo mã mới</span><span class="chev">▾</span></summary>
+          <form id="createPromoForm">
+            <label>Mã <input name="code" required placeholder="VD: TANG_THANG_1" autocomplete="off"></label>
+            <label>Quyền lợi <input name="entitlement" value="pro" required></label>
+            <label>Số ngày hiệu lực <input name="days" type="number" min="1" value="90" required></label>
+            <label>Tổng lượt tối đa <input name="max_uses" type="number" min="0" value="1" required></label>
+            <label>Đợt phát hành (campaign, tùy chọn) <input name="campaign" placeholder="VD: KOL_THANG_11"></label>
+            <label>Bắt đầu (tùy chọn) <input name="starts_at" type="datetime-local"></label>
+            <label>Hết hạn (tùy chọn) <input name="expires_at" type="datetime-local"></label>
+            <button type="submit">Tạo mã</button>
+          </form>
+          <p id="createPromoMsg" class="status"></p>
+        </details>
+        <div class="card">
+          <h3>Danh sách mã</h3>
+          <div id="promoList" class="list"></div>
+        </div>
+      </section>
+
+      <!-- Nhật ký đổi mã -->
+      <section id="tab-log" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Nhật ký đổi mã</h2>
+            <p class="page-desc">Tra cứu theo mã, theo tài khoản, theo kết quả.</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="filters">
+            <input id="logCode" type="text" placeholder="Mã (VD: TANG_THANG_1)" autocomplete="off">
+            <input id="logAccount" type="text" placeholder="Tài khoản (ID)" autocomplete="off">
+            <select id="logResult">
+              <option value="">Mọi kết quả</option>
+              <option value="granted">Thành công</option>
+              <option value="rejected">Bị từ chối</option>
+              <option value="error">Lỗi</option>
+            </select>
+            <button id="logSearchBtn" type="button">Tra cứu</button>
+          </div>
+          <div id="logList"></div>
+          <div id="logPager" class="pager"></div>
+        </div>
+      </section>
+
+      <!-- Cấp / thu hồi -->
+      <section id="tab-grant" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Cấp / thu hồi</h2>
+            <p class="page-desc">Chỉ quản trị. Mọi thao tác đều cần lý do và ghi vào nhật ký kiểm toán.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Cấp quyền lợi thủ công</h3>
+          <form id="grantForm">
+            <label>RevenueCat App User ID <input name="account_id" required autocomplete="off"></label>
+            <label>Quyền lợi <input name="entitlement" value="pro" required></label>
+            <label>Số ngày <input name="days" type="number" min="1" value="30" required></label>
+            <label>Lý do (bắt buộc, ghi vào kiểm toán) <input name="reason" required placeholder="VD: Hỗ trợ khách, tặng bù sự cố"></label>
+            <button type="submit">Cấp quyền lợi</button>
+          </form>
+          <p id="grantMsg" class="status"></p>
+        </div>
+        <div class="card">
+          <h3>Thu hồi quyền lợi tặng</h3>
+          <form id="revokeForm">
+            <label>RevenueCat App User ID <input name="account_id" required autocomplete="off"></label>
+            <label>Quyền lợi <input name="entitlement" value="pro" required></label>
+            <label>Lý do (bắt buộc, ghi vào kiểm toán) <input name="reason" required placeholder="VD: Mã bị lộ, thu hồi theo yêu cầu"></label>
+            <button type="submit">Thu hồi</button>
+          </form>
+          <p id="revokeMsg" class="status"></p>
+        </div>
+      </section>
+
+      <!-- Cờ cấu hình -->
+      <section id="tab-config" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Cấu hình app</h2>
+            <p class="page-desc">Cấu hình từ xa cho app: ô nhập mã tự quản, phiên bản tối thiểu, thông báo bảo trì, ghi đè giới hạn gói, số bản sao lưu, nén ảnh. Sửa cần lý do, ghi vào kiểm toán.</p>
+          </div>
+        </div>
+        <div class="card">
+          <form id="configForm">
+            <!-- Nhóm "Chung": menu con đầu tiên của Cấu hình app -->
+            <div class="config-group" data-config-group="general">
+            <label class="check"><input name="self_promo_enabled" type="checkbox"> Bật ô nhập mã tự quản trong app
+              <span class="hint">Tắt = chốt chặn production: app ẩn ô nhập mã và từ chối đổi mã.</span></label>
+            <label>Phiên bản tối thiểu (trống = không ép cập nhật)
+              <input name="min_version" placeholder="VD: 0.2.0"></label>
+            <label>Thông báo bảo trì (trống = không hiện)
+              <input name="maintenance_notice" placeholder="VD: Hệ thống bảo trì từ 2h–4h sáng"></label>
+            <p><strong>Ghi đè giới hạn gói</strong> <span class="hint">(không cần nhập JSON — chỉ cần điền số)</span></p>
+            <label>Số món tối đa (trống = dùng mặc định của gói)
+              <input name="limit_maxActiveItems" type="number" min="1" placeholder="VD: 100"></label>
+            <label>Số vị trí tối đa (trống = dùng mặc định của gói)
+              <input name="limit_maxLocations" type="number" min="1" placeholder="VD: 50"></label>
+            <label>Số ảnh mỗi món (trống = dùng mặc định của gói)
+              <input name="limit_maxItemPhotos" type="number" min="1" placeholder="VD: 5"></label>
+            <label>Số ảnh hiện trường mỗi món (trống = dùng mặc định của gói)
+              <input name="limit_maxScenePhotos" type="number" min="1" placeholder="VD: 5"></label>
+            <label>In nhãn QR ra PDF (ghi đè — chỉ cờ này trong nhóm allow* là app đang đọc thật)
+              <select name="limit_allowQrPrintPdf">
+                <option value="">Mặc định của gói (Free: tắt, Pro: bật)</option>
+                <option value="true">Bật cho mọi gói</option>
+                <option value="false">Tắt cho mọi gói</option>
+              </select></label>
+            <p class="hint">Ghi đè áp cho gói hiện tại của người dùng (cả Free lẫn
+            Pro). Để trống một ô là không ghi đè ô đó — app dùng mặc định
+            của gói. Nhập số là giới hạn mới cho ô đó. Các cờ allow* khác
+            trong app hiện chưa có điểm đọc nên không đưa lên form (đưa lên
+            chỉ là công tắc giả).</p>
+            </div>
+            <!-- Nhóm "Sao lưu & ảnh": menu con thứ hai -->
+            <div class="config-group" data-config-group="backup">
+            <h3>Sao lưu &amp; ảnh</h3>
+            <label class="check"><input name="cloud_backup_enabled" type="checkbox"> Bật sao lưu lên mây của tôi (Smartstash Cloud)
+              <span class="hint">Tắt = app khoá tạm mục mây (không sao lưu/khôi phục được); bật lại là mở ngay, không cần bản app mới.</span></label>
+            <label class="check"><input name="drive_backup_enabled" type="checkbox"> Bật sao lưu lên Google Drive
+              <span class="hint">Tắt = app khoá tạm mục Drive; bật lại là mở luồng kết nối Drive trong app (chỉ bật khi đã sẵn sàng về xác minh Google).</span></label>
+            <label>Số bản giữ lại — Drive tự quản (1–20)
+              <input name="drive_keep_backups" type="number" min="1" max="20"></label>
+            <label>Số bản giữ lại — mây của tôi (1–10)
+              <input name="cloud_keep_backups" type="number" min="1" max="10"></label>
+            <label class="check"><input name="backup_compress_enabled" type="checkbox"> Nén ảnh trong bản sao lưu
+              <span class="hint">Tắt = bản sao lưu giữ ảnh gốc (file nặng hơn).</span></label>
+            <label>Cạnh dài tối đa khi nén ảnh sao lưu (px, 256–4096)
+              <input name="backup_max_edge" type="number" min="256" max="4096"></label>
+            <label>Chất lượng nén ảnh sao lưu (0.1–1)
+              <input name="backup_quality" type="number" min="0.1" max="1" step="0.05"></label>
+            <label>Cạnh dài tối đa khi thêm ảnh (px, 256–4096)
+              <input name="photo_max_edge" type="number" min="256" max="4096"></label>
+            <label>Chất lượng ảnh khi thêm (0.1–1)
+              <input name="photo_quality" type="number" min="0.1" max="1" step="0.05"></label>
+            <p class="hint">Cờ sao lưu &amp; ảnh chỉ có hiệu lực với app sau khi
+            cài bản mới có đọc cờ (bản cũ bỏ qua cờ lạ, vẫn chạy như cũ).</p>
+            </div>
+            <!-- Nhóm "Gói lưu trữ": menu con thứ ba -->
+            <div class="config-group" data-config-group="plans">
+            <h3>Gói lưu trữ</h3>
+            <p class="hint">Bảng chốt 25/10/2026 (có thể đổi sau): 100MB 299.000đ/năm,
+            200MB 349.000đ/năm, 500MB 449.000đ/năm, 1GB 599.000đ/năm — giá đã
+            gồm phí Play 15% + thuế TNCN VN 10%. Gói nhỏ nhất trong bảng là
+            gói mặc định cho tài khoản mới. App đọc lại bảng mỗi lần mở app
+            và vào Cài đặt nên đổi giá không cần bản app mới.</p>
+            <div id="storagePlanRows"></div>
+            <button id="addStoragePlan" type="button" class="secondary">Thêm gói</button>
+            <p id="storagePlanMsg" class="status"></p>
+            </div>
+            <!-- Lý do + nút Lưu nằm ngoài 3 nhóm để luôn hiện, dù đang
+                 xem nhóm nào — lưu một lần là lưu toàn bộ cấu hình (các
+                 nhóm đang ẩn vẫn giữ giá trị đã nạp từ máy chủ). -->
+            <label>Lý do sửa (bắt buộc, ghi vào kiểm toán) <input name="reason" required placeholder="VD: Tắt ô nhập mã trước đợt phát hành"></label>
+            <button type="submit" id="configSave">Lưu cấu hình</button>
+          </form>
+          <p id="configMsg" class="status"></p>
+          <p id="configReadOnly" class="hint hidden">Tài khoản của bạn chỉ có quyền xem cấu hình.</p>
+        </div>
+        <div class="card">
+          <h3>Lịch sử cấu hình</h3>
+          <p class="hint">Mỗi lần lưu cấu hình là một bản snapshot. Bấm “Khôi phục bản này” để quay lại đúng bộ cờ của bản đó (cần lý do, ghi kiểm toán; khôi phục cũng tạo thêm một bản mới nên khôi phục sai thì khôi phục lại được).</p>
+          <div id="configHistoryList"></div>
+          <p id="configHistoryMsg" class="status"></p>
+        </div>
+      </section>
+
+      <!-- Sao lưu -->
+      <section id="tab-backups" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Sao lưu</h2>
+            <p class="page-desc">Thống kê kho chứa "mây của tôi" và dung lượng từng tài khoản theo gói.</p>
+          </div>
+          <button id="reloadBackups" type="button">Tải lại</button>
+        </div>
+        <div class="card">
+          <h3>Thống kê kho chứa</h3>
+          <div id="backupStats" class="list"></div>
+          <p class="hint">Số liệu trên lấy từ bảng backup_files trong D1. Chỉ quản trị
+          mới đổi được gói của một tài khoản (dùng khi hỗ trợ khách).</p>
+        </div>
+        <div class="card">
+          <h3>Tài khoản sao lưu theo gói</h3>
+          <div id="backupAccountList" class="list"></div>
+        </div>
+      </section>
+
+      <!-- Nhật ký kiểm toán -->
+      <section id="tab-audit" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Nhật ký kiểm toán</h2>
+            <p class="page-desc">Mọi thao tác ghi của quản trị viên và hệ thống (kể cả lý do). Nhật ký này chỉ đọc, không sửa/xoá.</p>
+          </div>
+          <button id="reloadAudit" type="button">Tải lại</button>
+        </div>
+        <div class="card">
+          <div id="auditFullList"></div>
+          <div id="auditPager" class="pager"></div>
+        </div>
+      </section>
+
+      <!-- Người dùng quản trị -->
+      <section id="tab-users" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Người dùng quản trị</h2>
+            <p class="page-desc">Chỉ quản trị. Mỗi người một tài khoản, đúng vai trò.</p>
+          </div>
+          <button id="reloadUsers" type="button">Tải lại</button>
+        </div>
+        <details id="createUserWrap" class="card">
+          <summary><span>Thêm người dùng</span><span class="chev">▾</span></summary>
+          <form id="createUserForm">
+            <label>Email <input name="email" type="email" required autocomplete="off"></label>
+            <label>Mật khẩu (tối thiểu 8 ký tự) <input name="password" type="password" required autocomplete="new-password"></label>
+            <label>Vai trò
+              <select name="role">
+                <option value="viewer">Chỉ xem — chỉ xem số liệu, không sửa gì</option>
+                <option value="staff">Nhân viên — xem + tạo/bật-tắt mã khuyến mãi</option>
+                <option value="admin">Quản trị — toàn quyền, kể cả quản lý người dùng</option>
+              </select>
+            </label>
+            <button type="submit">Thêm người dùng</button>
+          </form>
+          <p id="createUserMsg" class="status"></p>
+        </details>
+        <div class="card">
+          <h3>Danh sách người dùng</h3>
+          <div id="userList" class="list"></div>
+        </div>
+      </section>
+
+      <!-- Cài đặt -->
+      <section id="tab-settings" class="view hidden">
+        <div class="page-head">
+          <div>
+            <h2>Cài đặt</h2>
+            <p class="page-desc">Kết nối tới Worker và tài khoản của bạn.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Kết nối</h3>
+          <label>Địa chỉ Worker (API)
+            <input id="apiBase" type="url" placeholder="https://smartstash-admin.&lt;subdomain&gt;.workers.dev" autocomplete="off">
+          </label>
+          <button id="saveSettings" type="button">Lưu kết nối</button>
+          <p class="hint">Địa chỉ Worker lưu trên trình duyệt này. Đăng nhập bằng tài khoản
+          riêng từng người (không còn mã chung).</p>
+          <p id="connStatus" class="status"></p>
+        </div>
+        <div class="card" id="accountBox">
+          <h3>Tài khoản của bạn</h3>
+          <p id="accountInfo" class="meta"></p>
+          <details id="pwDetails">
+            <summary><span>Đổi mật khẩu</span><span class="chev">▾</span></summary>
+            <form id="changePwForm">
+              <label>Mật khẩu hiện tại <input name="current_password" type="password" required autocomplete="current-password"></label>
+              <label>Mật khẩu mới (tối thiểu 8 ký tự) <input name="new_password" type="password" required autocomplete="new-password"></label>
+              <label>Nhập lại mật khẩu mới <input name="new_password2" type="password" required autocomplete="new-password"></label>
+              <button type="submit">Đổi mật khẩu</button>
+            </form>
+            <p id="changePwMsg" class="status"></p>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>SmartStash Admin · Chạy trên Cloudflare Workers + D1 + KV · Không có gói Family.</p>
+    </footer>
+  </div>
+</div>
+
+<!-- Màn đăng nhập / tạo tài khoản đầu tiên (ngoài khung chính) -->
+<div id="authViews">
+  <div class="auth-brand"><strong>SmartStash</strong><span>Quản trị</span></div>
+  <section id="setupBox" class="card auth-card hidden">
+    <h2>Tạo tài khoản quản trị đầu tiên</h2>
+    <p class="hint">Chỉ làm được một lần duy nhất, khi hệ thống chưa có tài khoản nào.
+    Cần mã ADMIN_TOKEN đã đặt làm Worker secret (mã này sau đó không còn
+    dùng để đăng nhập nữa).</p>
+    <form id="setupForm">
+      <label>Mã thiết lập (ADMIN_TOKEN, dùng 1 lần)
+        <input name="setup_token" type="password" required autocomplete="off"></label>
+      <label>Email <input name="email" type="email" required autocomplete="username"></label>
+      <label>Mật khẩu (tối thiểu 8 ký tự) <input name="password" type="password" required autocomplete="new-password"></label>
+      <label>Nhập lại mật khẩu <input name="password2" type="password" required autocomplete="new-password"></label>
+      <button type="submit">Tạo tài khoản và đăng nhập</button>
     </form>
-    <p id="createPromoMsg" class="status"></p>
-    <h2>Danh sách mã</h2>
-    <button id="reloadPromos" type="button">Tải lại</button>
-    <div id="promoList" class="list"></div>
+    <p id="setupMsg" class="status"></p>
   </section>
 
-  <!-- Nhật ký đổi mã -->
-  <section id="tab-log" class="card tab hidden">
-    <h2>Nhật ký đổi mã gần nhất</h2>
-    <button id="reloadLog" type="button">Tải lại</button>
-    <div id="logList" class="list"></div>
-  </section>
-
-  <!-- Cấp / thu hồi thủ công -->
-  <section id="tab-grant" class="card tab hidden">
-    <h2>Cấp quyền lợi thủ công</h2>
-    <form id="grantForm">
-      <label>RevenueCat App User ID <input name="account_id" required autocomplete="off"></label>
-      <label>Quyền lợi <input name="entitlement" value="pro" required></label>
-      <label>Số ngày <input name="days" type="number" min="1" value="30" required></label>
-      <button type="submit">Cấp quyền lợi</button>
+  <section id="loginBox" class="card auth-card hidden">
+    <h2>Đăng nhập quản trị</h2>
+    <form id="loginForm">
+      <label>Email <input name="email" type="email" required autocomplete="username"></label>
+      <label>Mật khẩu <input name="password" type="password" required autocomplete="current-password"></label>
+      <button type="submit">Đăng nhập</button>
     </form>
-    <p id="grantMsg" class="status"></p>
-    <h2>Thu hồi quyền lợi tặng</h2>
-    <form id="revokeForm">
-      <label>RevenueCat App User ID <input name="account_id" required autocomplete="off"></label>
-      <label>Quyền lợi <input name="entitlement" value="pro" required></label>
-      <button type="submit">Thu hồi</button>
-    </form>
-    <p id="revokeMsg" class="status"></p>
+    <p id="loginMsg" class="status"></p>
   </section>
+</div>
 
-  <!-- Cờ cấu hình -->
-  <section id="tab-config" class="card tab hidden">
-    <h2>Cờ cấu hình từ xa</h2>
-    <form id="configForm">
-      <label class="check"><input name="self_promo_enabled" type="checkbox"> Bật ô nhập mã tự quản trong app
-        <span class="hint">Tắt = chốt chặn production: app ẩn ô nhập mã và từ chối đổi mã.</span></label>
-      <label>Phiên bản tối thiểu (trống = không ép cập nhật)
-        <input name="min_version" placeholder="VD: 0.2.0"></label>
-      <label>Thông báo bảo trì (trống = không hiện)
-        <input name="maintenance_notice" placeholder="VD: Hệ thống bảo trì từ 2h–4h sáng"></label>
-      <label>Ghi đè giới hạn gói (JSON, trống = dùng mặc định trong app)
-        <input name="plan_limits_override" placeholder='VD: {"max_items": 100}'></label>
-      <button type="submit">Lưu cấu hình</button>
-    </form>
-    <p id="configMsg" class="status"></p>
-  </section>
-
-  <!-- Sao lưu -->
-  <section id="tab-backups" class="card tab hidden">
-    <h2>Thống kê sao lưu "mây của tôi"</h2>
-    <button id="reloadBackups" type="button">Tải lại</button>
-    <div id="backupStats" class="list"></div>
-    <p class="hint">Tải lên/tải xuống qua adapter Drive hiện chưa kích hoạt (xem README).
-    Số liệu trên lấy từ bảng backup_files trong D1.</p>
-  </section>
-</main>
-
-<footer>
-  <p>SmartStash Admin · Chạy trên Cloudflare Workers + D1 + KV · Không có gói Family.</p>
-</footer>
+<!-- Popup thông báo chung (hiện dùng cho "Lưu cấu hình thành công"):
+     bấm nút Đóng, bấm ra ngoài, hoặc phím Esc để đóng. -->
+<div id="popupOverlay" class="popup-overlay hidden">
+  <div class="popup-card" role="dialog" aria-modal="true" aria-labelledby="popupTitle">
+    <div class="popup-icon">✓</div>
+    <h3 id="popupTitle"></h3>
+    <p id="popupMsg"></p>
+    <button id="popupClose" type="button">Đóng</button>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

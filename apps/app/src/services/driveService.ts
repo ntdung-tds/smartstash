@@ -8,6 +8,7 @@ import {
 import { kvGet, kvSet } from '../db/client';
 import { DRIVE_CLIENT_IDS, isDriveConfigured } from '../config';
 import { collectData, parseBackupPayload, restoreData } from './backupService';
+import { getDriveKeepBackups, isDriveBackupEnabled } from './remoteConfigService';
 import {
   BackupError,
   decryptDriveEnvelope,
@@ -48,7 +49,7 @@ const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3/files';
 
 /** Số bản sao lưu giữ lại trên Drive — bản cũ hơn tự xoá sau mỗi lần tải lên */
-export const DRIVE_KEEP_BACKUPS = 5;
+export const DRIVE_KEEP_BACKUPS = 3;
 
 export class DriveError extends Error {
   code:
@@ -75,17 +76,32 @@ export interface DriveBackupFile {
 
 /* --------------------- Đăng nhập Google (SDK native) --------------------- */
 
-let googleConfigured = false;
-
 /**
- * Cấu hình SDK Google Sign-In đúng 1 lần (lười — chỉ chạy khi thật sự cần
- * tới Drive). Chỉ cần WEB Client ID: trên Android, Play Services tự đối
- * chiếu package + SHA-1 của app với Android OAuth client đã đăng ký trên
- * Google Cloud, không cần redirect URI như luồng trình duyệt cũ.
+ * TÁCH LUỒNG v82 (tạm thời, cho tới khi xác minh OAuth xong):
+ * - Đổi mã khuyến mãi dùng đăng nhập Google SCOPE CƠ BẢN (mặc định của
+ *   SDK: email + profile, không xin drive.appdata) nên không vướng màn
+ *   cảnh báo / trần của scope nhạy cảm — đổi mã chạy được ngay.
+ * - Sao lưu Drive TẠM DỪNG ở tầng UI (nút Drive báo "đang phát triển",
+ *   không gọi connectDrive) — các hàm Drive bên dưới vẫn giữ nguyên để
+ *   mở lại chỉ bằng cách gỡ cổng ở UI, không cần viết lại service.
+ * SDK cho phép configure lại: mỗi luồng tự cấu hình scope của mình trước
+ * khi dùng, lần configure sau ghi đè lần trước — không dùng chung 1 cờ
+ * "đã cấu hình" nữa để tránh kẹt scope Drive sang luồng đổi mã.
  */
-function ensureGoogleConfigured(): void {
-  if (googleConfigured) return;
-  googleConfigured = true;
+let lastGoogleScopes: 'promo' | 'drive' | null = null;
+
+function ensurePromoGoogleConfigured(): void {
+  if (lastGoogleScopes === 'promo') return;
+  lastGoogleScopes = 'promo';
+  GoogleSignin.configure({
+    webClientId: DRIVE_CLIENT_IDS.web,
+    offlineAccess: false,
+  });
+}
+
+function ensureDriveGoogleConfigured(): void {
+  if (lastGoogleScopes === 'drive') return;
+  lastGoogleScopes = 'drive';
   GoogleSignin.configure({
     webClientId: DRIVE_CLIENT_IDS.web,
     scopes: [DRIVE_SCOPE],
@@ -110,7 +126,7 @@ export async function connectDrive(): Promise<DriveConnectResult> {
   if (!isDriveConfigured()) {
     throw new DriveError('NOT_CONFIGURED', 'Drive chưa được cấu hình Client ID');
   }
-  ensureGoogleConfigured();
+  ensureDriveGoogleConfigured();
   try {
     await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
   } catch (e) {
@@ -126,7 +142,7 @@ export async function connectDrive(): Promise<DriveConnectResult> {
 
 /** SDK còn giữ phiên đăng nhập Google hay không */
 export async function isDriveConnected(): Promise<boolean> {
-  ensureGoogleConfigured();
+  ensureDriveGoogleConfigured();
   try {
     return GoogleSignin.hasPreviousSignIn();
   } catch {
@@ -135,14 +151,14 @@ export async function isDriveConnected(): Promise<boolean> {
 }
 
 /** Trạng thái kết nối + email của phiên SDK hiện tại, để UI hiện "Đã kết nối: …" */
-export async function getDriveConnectionInfo(): Promise<{ connected: boolean; email: string | null }> {
-  ensureGoogleConfigured();
+export async function getDriveConnectionInfo(): Promise<{ connected: boolean; email: string | null; photo: string | null }> {
+  ensureDriveGoogleConfigured();
   try {
-    if (!GoogleSignin.hasPreviousSignIn()) return { connected: false, email: null };
+    if (!GoogleSignin.hasPreviousSignIn()) return { connected: false, email: null, photo: null };
     const user = GoogleSignin.getCurrentUser();
-    return { connected: true, email: user?.user.email ?? null };
+    return { connected: true, email: user?.user.email ?? null, photo: user?.user.photo ?? null };
   } catch {
-    return { connected: false, email: null };
+    return { connected: false, email: null, photo: null };
   }
 }
 
@@ -154,7 +170,7 @@ export async function getDriveConnectionInfo(): Promise<{ connected: boolean; em
  * Drive mà không cần biết mật khẩu.
  */
 export async function disconnectDrive(): Promise<void> {
-  ensureGoogleConfigured();
+  ensureDriveGoogleConfigured();
   try {
     await GoogleSignin.revokeAccess();
   } catch {
@@ -168,12 +184,147 @@ export async function disconnectDrive(): Promise<void> {
 }
 
 /**
+ * Đổi tài khoản Google (v80): đăng xuất khỏi phiên SDK rồi đăng nhập lại
+ * để hộp thoại chọn tài khoản của Google hiện ra — gọi signIn() trực tiếp
+ * khi đã có phiên sẽ trả về tài khoản cũ ngay mà không hiện bảng chọn,
+ * nên bắt buộc phải signOut trước. KHÔNG revokeAccess: chỉ xoá phiên,
+ * quyền Drive đã cấp được giữ nguyên để tài khoản cũ kết nối lại vẫn dùng
+ * được ngay.
+ *
+ * Giới hạn kỹ thuật (SDK 16): signOut xoá phiên TRƯỚC khi bảng chọn hiện,
+ * nên nếu người dùng huỷ bảng chọn thì phiên cũ KHÔNG khôi phục lại được
+ * một cách im lặng — hàm thử signInSilently() để cứu (chỉ thành công khi
+ * signOut trước đó thực ra chưa xoá được phiên), nếu không được thì trả
+ * 'signed_out' để UI báo rõ "bạn đã đăng xuất, hãy đăng nhập lại" thay vì
+ * đăng xuất lén hay crash. Không bao giờ đổi sang tài khoản khác khi người
+ * dùng chưa chọn.
+ */
+export type GoogleSwitchResult =
+  | { status: 'switched'; email: string | null }
+  | { status: 'cancelled' }
+  | { status: 'signed_out' };
+
+export async function switchGoogleAccount(): Promise<GoogleSwitchResult> {
+  if (!isDriveConfigured()) {
+    throw new DriveError('NOT_CONFIGURED', 'Drive chưa được cấu hình Client ID');
+  }
+  ensureDriveGoogleConfigured();
+  try {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+  } catch (e) {
+    if (isErrorWithCode(e) && e.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+      throw new DriveError('PLAY_SERVICES', 'Thiết bị không có Google Play Services');
+    }
+    throw e;
+  }
+  try {
+    await GoogleSignin.signOut();
+  } catch {
+    // best-effort: vẫn thử mở bảng chọn bên dưới
+  }
+  const res = await GoogleSignin.signIn();
+  if (res.type === 'cancelled') {
+    // Cứu phiên cũ nếu còn cứu được (signOut trước đó chưa xoá xong).
+    try {
+      const silent = await GoogleSignin.signInSilently();
+      if (silent.type === 'success') return { status: 'cancelled' };
+    } catch {
+      // không cứu được — rơi xuống 'signed_out' bên dưới
+    }
+    return { status: 'signed_out' };
+  }
+  return { status: 'switched', email: res.data.user.email ?? null };
+}
+
+/* ----------------- Đăng nhập Google cho ĐỔI MÃ (v82, scope cơ bản) ----------------- */
+
+/**
+ * Đăng nhập Google chỉ để đổi mã: scope mặc định email + profile, KHÔNG
+ * xin drive.appdata nên không chạm tới xác minh scope nhạy cảm. Huỷ
+ * picker → { status: 'cancelled' } để UI im lặng ở lại khối đăng nhập.
+ * Dùng chung phiên SDK với Drive về mặt kỹ thuật, nhưng từ v82 UI Drive
+ * không gọi signIn nữa nên phiên này thực chất chỉ phục vụ đổi mã.
+ */
+export async function signInForPromo(): Promise<DriveConnectResult> {
+  if (!isDriveConfigured()) {
+    throw new DriveError('NOT_CONFIGURED', 'Chưa được cấu hình Client ID');
+  }
+  ensurePromoGoogleConfigured();
+  try {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+  } catch (e) {
+    if (isErrorWithCode(e) && e.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+      throw new DriveError('PLAY_SERVICES', 'Thiết bị không có Google Play Services');
+    }
+    throw e;
+  }
+  const res = await GoogleSignin.signIn();
+  if (res.type === 'cancelled') return { status: 'cancelled' };
+  return { status: 'connected', email: res.data.user.email ?? null };
+}
+
+/**
+ * Đổi tài khoản Google cho luồng đổi mã (v82): cùng logic v80 (signOut
+ * rồi signIn để hiện bảng chọn, không revokeAccess), chỉ khác là cấu
+ * hình scope cơ bản. Huỷ bảng chọn mà phiên cũ không cứu được → trả
+ * 'signed_out' để UI báo rõ, không đăng xuất lén.
+ */
+export async function switchPromoGoogleAccount(): Promise<GoogleSwitchResult> {
+  if (!isDriveConfigured()) {
+    throw new DriveError('NOT_CONFIGURED', 'Chưa được cấu hình Client ID');
+  }
+  ensurePromoGoogleConfigured();
+  try {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+  } catch (e) {
+    if (isErrorWithCode(e) && e.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+      throw new DriveError('PLAY_SERVICES', 'Thiết bị không có Google Play Services');
+    }
+    throw e;
+  }
+  try {
+    await GoogleSignin.signOut();
+  } catch {
+    // best-effort: vẫn thử mở bảng chọn bên dưới
+  }
+  const res = await GoogleSignin.signIn();
+  if (res.type === 'cancelled') {
+    try {
+      const silent = await GoogleSignin.signInSilently();
+      if (silent.type === 'success') return { status: 'cancelled' };
+    } catch {
+      // không cứu được — rơi xuống 'signed_out' bên dưới
+    }
+    return { status: 'signed_out' };
+  }
+  return { status: 'switched', email: res.data.user.email ?? null };
+}
+
+/** Trạng thái đăng nhập + email của phiên đổi mã (scope cơ bản) */
+/**
+ * Trạng thái luồng đổi mã + ảnh đại diện Google (v84): SDK trả user.photo
+ * (URL lh3.googleusercontent.com, truy cập công khai, không cần token) —
+ * trước đây chỉ lấy email nên thẻ tài khoản chỉ hiện placeholder tím.
+ * photo = null khi tài khoản không có ảnh (khi đó UI giữ placeholder).
+ */
+export async function getPromoConnectionInfo(): Promise<{ connected: boolean; email: string | null; photo: string | null }> {
+  ensurePromoGoogleConfigured();
+  try {
+    if (!GoogleSignin.hasPreviousSignIn()) return { connected: false, email: null, photo: null };
+    const user = GoogleSignin.getCurrentUser();
+    return { connected: true, email: user?.user.email ?? null, photo: user?.user.photo ?? null };
+  } catch {
+    return { connected: false, email: null, photo: null };
+  }
+}
+
+/**
  * Access token cho Drive REST: SDK tự giữ phiên + tự làm tươi token, JS
  * không lưu token ở bất cứ đâu (khác hẳn luồng cũ tự giữ
  * refresh token trong SecureStore).
  */
 export async function getValidAccessToken(): Promise<string> {
-  ensureGoogleConfigured();
+  ensureDriveGoogleConfigured();
   if (!GoogleSignin.hasPreviousSignIn()) {
     throw new DriveError('NOT_CONNECTED', 'Chưa kết nối Google Drive');
   }
@@ -182,6 +333,25 @@ export async function getValidAccessToken(): Promise<string> {
     return accessToken;
   } catch {
     throw new DriveError('AUTH', 'Không lấy được token Google — hãy kết nối lại');
+  }
+}
+
+/**
+ * ID token Google cho luồng đổi mã khuyến mãi (v78, v82 tách scope cơ
+ * bản): SDK tự giữ phiên + tự làm tươi token giống access token; Worker
+ * tự kiểm tra token này với Google rồi mới lấy định danh tài khoản thật
+ * — app KHÔNG BAO GIỜ tự ghi ID tài khoản gửi lên máy chủ. Trả null khi
+ * chưa đăng nhập hoặc SDK không cấp được ID token (để UI hiện nút đăng
+ * nhập thay vì báo lỗi chung).
+ */
+export async function getGoogleIdToken(): Promise<string | null> {
+  ensurePromoGoogleConfigured();
+  if (!GoogleSignin.hasPreviousSignIn()) return null;
+  try {
+    const { idToken } = await GoogleSignin.getTokens();
+    return idToken || null;
+  } catch {
+    return null;
   }
 }
 
@@ -270,10 +440,12 @@ export async function deleteDriveFile(id: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new DriveError('NETWORK', `Drive delete lỗi ${res.status}`);
 }
 
-/** Xoay vòng: chỉ giữ DRIVE_KEEP_BACKUPS bản mới nhất, xoá các bản cũ hơn */
+/** Xoay vòng: chỉ giữ số bản theo cờ drive_keep_backups (mặc định
+ * DRIVE_KEEP_BACKUPS = 3), xoá các bản cũ hơn */
 async function rotateDriveBackups(): Promise<void> {
   const files = await listDriveBackups();
-  for (const extra of files.slice(DRIVE_KEEP_BACKUPS)) {
+  const keep = getDriveKeepBackups() || DRIVE_KEEP_BACKUPS;
+  for (const extra of files.slice(keep)) {
     await deleteDriveFile(extra.id).catch(() => {});
   }
 }
@@ -344,7 +516,10 @@ async function recordDriveStatus(ok: boolean): Promise<void> {
 
 /**
  * Tạo 1 bản sao lưu mã hoá v2 và đẩy lên Drive của khách, xoay vòng giữ
- * 5 bản mới nhất. Ghi app_kv drive_last_at/drive_last_status sau mỗi lượt.
+ * số bản theo cờ drive_keep_backups (mặc định 3). Ghi app_kv
+ * drive_last_at/drive_last_status sau mỗi lượt. Ảnh trong bản sao lưu
+ * được nén như bản sao lưu mây (theo cờ backup_*) để file nhẹ hơn — ảnh
+ * gốc trên máy không bị đụng.
  */
 export async function createDriveBackup(): Promise<{ id: string; name: string }> {
   try {
@@ -353,7 +528,7 @@ export async function createDriveBackup(): Promise<{ id: string; name: string }>
     if (!masterKey) throw new DriveError('NO_MASTER_KEY', 'Chưa đặt mật khẩu sao lưu Drive');
     const wrapped = await getStoredWrappedKey();
     if (!wrapped) throw new DriveError('NO_MASTER_KEY', 'Thiếu blob khoá đã bọc trong SecureStore');
-    const payload = await collectData();
+    const payload = await collectData({ compressImages: true });
     const fileText = await encryptByMasterKey(JSON.stringify(payload), masterKey, wrapped);
     const file = await uploadDriveBackup(driveBackupFileName(new Date()), fileText);
     await rotateDriveBackups().catch(() => {});
@@ -450,8 +625,14 @@ export async function checkDriveBackupMissing(): Promise<boolean> {
  * nuốt — chỉ ghi drive_last_status, TUYỆT ĐỐI không làm phiền người dùng
  * lúc mở app.
  */
+// v84: tự động sao lưu Drive nền chỉ chạy khi cờ quản trị
+// drive_backup_enabled đang BẬT (thay cờ cứng DRIVE_LOGIN_DISABLED_V82
+// của v82). Cờ tắt thì không chạy — tránh ghi drive_last_status='error'
+// oan cho phiên đổi mã (scope cơ bản, không có quyền Drive). _layout đã
+// nạp cấu hình từ xa trước khi gọi hàm này nên cờ ở đây là cờ mới nhất.
 export async function runAutoDriveBackupIfDue(): Promise<void> {
   try {
+    if (!isDriveBackupEnabled()) return;
     if (!isDriveConfigured()) return;
     if ((await kvGet('drive_auto')) !== '1') return;
     if (!(await isDriveConnected())) return;

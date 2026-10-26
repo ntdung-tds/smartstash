@@ -26,19 +26,23 @@ smartstash-admin/
 │   ├── index.js           # Điểm vào Worker: routing, phân quyền, CORS
 │   ├── lib/
 │   │   ├── http.js        # Trả JSON, đọc body, chuẩn hoá mã
-│   │   ├── auth.js        # Kiểm tra ADMIN_TOKEN, giới hạn tốc độ đổi mã
+│   │   ├── auth.js        # Tiện ích chung, giới hạn tốc độ đổi mã
+│   │   ├── adminAuth.js   # Tài khoản quản trị: hash PBKDF2, phiên, phân quyền
 │   │   ├── revenuecat.js  # Cấp/thu hồi quyền lợi tặng, xác minh webhook
 │   │   └── storage.js     # Tầng lưu trữ trừu tượng + khung adapter Drive
 │   └── routes/
+│       ├── auth.js        # Trạng thái, setup đầu tiên, đăng nhập/đăng xuất
+│       ├── users.js       # Quản lý tài khoản quản trị (chỉ admin)
+│       ├── admin.js       # Thống kê, audit, tài khoản app, tài khoản sao lưu
 │       ├── promo.js       # Mã khuyến mãi + LUỒNG ĐỔI MÃ cốt lõi
 │       ├── entitlements.js# Cấp/thu hồi thủ công
 │       ├── config.js      # Cờ cấu hình từ xa
 │       ├── backups.js     # Thống kê + khung tải lên/tải xuống
 │       └── webhooks.js    # Nhận webhook RevenueCat
 └── public/                # PWA quản trị (deploy lên Cloudflare Pages)
-    ├── index.html         # 5 màn: mã, nhật ký, cấp/thu hồi, cờ, sao lưu
+    ├── index.html         # Đăng nhập + 10 màn theo menu drawer: tổng quan, doanh thu, tài khoản app, người dùng quản trị, mã, nhật ký đổi mã, cấp/thu hồi, cờ, sao lưu, nhật ký kiểm toán
     ├── styles.css
-    ├── app.js             # Gọi API bằng fetch + ADMIN_TOKEN
+    ├── app.js             # Gọi API bằng fetch + session token
     ├── manifest.json
     ├── sw.js              # Service worker tối giản (cache vỏ giao diện)
     ├── icon-192.png       # Icon PWA tạm (nền tím) — thay bằng logo thật khi phát hành
@@ -53,7 +57,7 @@ Mã lỗi dùng xuyên suốt: `unauthorized`, `not_found`, `invalid_fields`,
 `uses_exhausted`, `campaign_used`, `rate_limited`, `not_configured`,
 `revenuecat_error`, `storage_not_configured`, `internal_error`.
 
-### Công khai (không cần ADMIN_TOKEN)
+### Công khai (không cần đăng nhập)
 
 | Route | Mô tả |
 |---|---|
@@ -61,21 +65,58 @@ Mã lỗi dùng xuyên suốt: `unauthorized`, `not_found`, `invalid_fields`,
 | `GET /api/config` | App đọc cờ cấu hình (ngoại tuyến thì dùng mặc định trong code). |
 | `POST /api/promo/redeem` | **Luồng đổi mã cốt lõi** (xem mục 3). Body: `{ code, account_id, idempotency_key? }`; header `X-Idempotency-Key` được ưu tiên. Giới hạn 10 lần / 60 giây / tài khoản. |
 | `POST /api/webhooks/revenuecat` | Nhận webhook RevenueCat, xác minh bằng `REVENUECAT_WEBHOOK_SECRET`, chống xử lý trùng theo event id. |
+| `GET /api/auth/status` | PWA biết đã có tài khoản quản trị chưa (`{ hasUsers }`). |
+| `POST /api/auth/setup` | Tạo tài khoản quản trị đầu tiên (chỉ khi chưa có tài khoản nào; khoá bằng `ADMIN_TOKEN` — xem mục 2.1). |
+| `POST /api/auth/login` | Đăng nhập, trả session token (giới hạn 10 lần sai / 15 phút / email). |
 
-### Quản trị (bắt buộc header `Authorization: Bearer <ADMIN_TOKEN>`)
+### Quản trị (bắt buộc phiên đăng nhập: `Authorization: Bearer <session>`)
 
-| Route | Mô tả |
-|---|---|
-| `GET /api/promo` | Liệt kê mã kèm số lượt đã đổi (chỉ tính lượt `granted`). |
-| `POST /api/promo` | Tạo mã: `{ code, entitlement?, days, max_uses?, campaign?, starts_at?, expires_at? }`. |
-| `PATCH /api/promo/:code` | Bật/tắt mã: `{ enabled: true/false }`. |
-| `GET /api/promo/redemptions?limit=100` | Nhật ký đổi mã gần nhất. |
-| `GET /api/promo/:code/redemptions` | Nhật ký đổi của một mã. |
-| `POST /api/entitlements/grant` | Cấp thủ công: `{ account_id, entitlement?, days? }`. |
-| `POST /api/entitlements/revoke` | Thu hồi tặng: `{ account_id, entitlement? }`. |
-| `PUT /api/config` | Ghi cờ: `self_promo_enabled`, `min_version`, `maintenance_notice`, `plan_limits_override`. |
-| `GET /api/backups/usage` | Thống kê từ bảng `backup_files` trong D1 + trạng thái adapter. |
-| `POST /api/backups/upload`, `GET /api/backups/download` | **Khung chưa kích hoạt**: luôn trả `503 storage_not_configured` cho tới khi adapter Drive được kích hoạt (mục 6). |
+Phân quyền: **admin** (toàn quyền) · **staff** (xem + tạo/bật-tắt mã) ·
+**viewer** (chỉ xem). Mọi kiểm tra đều ở phía server.
+
+| Route | Quyền tối thiểu | Mô tả |
+|---|---|---|
+| `GET /api/promo` | viewer | Liệt kê mã kèm số lượt đã đổi (chỉ tính lượt `granted`). |
+| `POST /api/promo` | staff | Tạo mã: `{ code, entitlement?, days, max_uses?, campaign?, starts_at?, expires_at? }`. |
+| `PATCH /api/promo/:code` | staff | Bật/tắt mã: `{ enabled: true/false }`. |
+| `GET /api/promo/redemptions?limit=100` | viewer | Nhật ký đổi mã gần nhất. |
+| `GET /api/promo/:code/redemptions` | viewer | Nhật ký đổi của một mã. |
+| `POST /api/entitlements/grant` | admin | Cấp thủ công: `{ account_id, entitlement?, days? }`. |
+| `POST /api/entitlements/revoke` | admin | Thu hồi tặng: `{ account_id, entitlement? }`. |
+| `PUT /api/config` | admin | Ghi cờ: `self_promo_enabled`, `min_version`, `maintenance_notice`, `plan_limits_override`. |
+| `GET /api/backups/usage` | viewer | Thống kê từ bảng `backup_files` trong D1 + trạng thái adapter. |
+| `POST /api/backups/upload`, `GET /api/backups/download` | (xác thực TOFU riêng, không cần đăng nhập quản trị) | Sao lưu "mây của tôi" qua adapter R2. |
+| `GET /api/admin/stats` | viewer | Số liệu tổng hợp: tài khoản theo gói, tài khoản mới 30 ngày, mã, lượt đổi (kèm theo ngày 14 ngày), sao lưu, quản trị viên. |
+| `GET /api/admin/audit?limit=50` | viewer | Nhật ký thao tác quản trị gần nhất. |
+| `GET /api/admin/accounts?plan=&limit=100` | viewer | Tài khoản app (người dùng cuối), lọc theo gói. |
+| `GET /api/admin/accounts/:id` | viewer | Tra cứu một tài khoản (theo ID hoặc email) kèm lượt đổi mã của tài khoản đó. |
+| `GET /api/admin/revenue` | viewer | Doanh thu theo tháng/sản phẩm/cửa hàng/quốc gia từ bảng `revenue_events` (giá gộp theo webhook, tách từng currency). Trống khi chưa nối RevenueCat. |
+| `GET /api/promo/redemptions?code=&account=&result=&limit=` | staff | Nhật ký đổi mã, tra cứu theo mã, theo tài khoản, theo kết quả. |
+| `GET /api/admin/backups/accounts` | viewer | Tài khoản "mây của tôi" kèm số file + dung lượng thực tế. |
+| `PATCH /api/admin/backups/accounts/:id` | admin | Đổi gói lưu trữ: `{ tier_mb: 100/200/500/1000 }`. |
+| `GET /api/admin/users` | admin | Liệt kê tài khoản quản trị (không trả password_hash). |
+| `POST /api/admin/users` | admin | Thêm tài khoản: `{ email, password, role }`. |
+| `PATCH /api/admin/users/:id` | admin | Đổi role / khoá-mở khoá (không tự đổi chính mình; luôn còn ≥ 1 admin hoạt động). |
+| `DELETE /api/admin/users/:id` | admin | Xoá tài khoản (kèm toàn bộ phiên của nó). |
+| `POST /api/admin/users/:id/reset-password` | admin | Đặt lại mật khẩu cho người khác (thu hồi toàn bộ phiên của người đó). |
+| `GET /api/auth/me`, `POST /api/auth/logout`, `POST /api/auth/change-password` | (tài khoản của mình) | Thông tin phiên, đăng xuất, tự đổi mật khẩu. |
+
+### 2.1. Tài khoản quản trị — cách vận hành
+
+1. **Lần đầu:** đặt secret `ADMIN_TOKEN` (mục 4.3), mở PWA → màn "Tạo tài
+   khoản quản trị đầu tiên" → nhập mã thiết lập (chính `ADMIN_TOKEN`) + email
+   + mật khẩu → tài khoản admin đầu tiên được tạo và tự đăng nhập.
+2. **Từ đó về sau:** `ADMIN_TOKEN` không còn mở được API nào nữa. Mọi người
+   đăng nhập bằng tài khoản riêng (email + mật khẩu, hash PBKDF2-SHA256 lưu
+   ở D1). Phiên có hạn 30 ngày; khoá/xoá tài khoản hoặc đổi mật khẩu thì
+   thu hồi phiên ngay.
+3. **Thêm người:** admin vào tab "Người dùng" trong PWA để thêm tài khoản,
+   chọn vai trò, khoá/mở khoá, đặt lại mật khẩu, xoá.
+4. **Quên mật khẩu admin duy nhất / mất hết tài khoản:** chủ app xoá toàn bộ
+   dòng trong bảng `admin_users` (qua D1 trên dashboard hoặc
+   `wrangler d1 execute`) rồi làm lại bước 1 — vì bước 1 chỉ chạy khi bảng
+   còn trống. Đây là đường khôi phục duy nhất có chủ đích; không có chức
+   năng "quên mật khẩu" gửi email.
 
 ## 3. Luồng đổi mã — chính sách đã chốt (đọc kỹ trước khi sửa)
 
@@ -131,7 +172,9 @@ npm run db:apply
 
 ```
 wrangler secret put ADMIN_TOKEN
-# -> tự đặt một chuỗi dài ngẫu nhiên, chỉ chủ app biết. PWA nhập token này 1 lần.
+# -> tự đặt một chuỗi dài ngẫu nhiên, chỉ chủ app biết. CHỈ dùng một lần cho
+#    màn tạo tài khoản quản trị đầu tiên (mục 2.1); sau đó không dùng để đăng
+#    nhập nữa, cũng không chia sẻ cho người khác.
 
 wrangler secret put REVENUECAT_SECRET_KEY
 # -> khoá bí mật (sk_...) lấy trong RevenueCat dashboard (Project Settings > API Keys).
@@ -161,12 +204,13 @@ npx wrangler pages deploy public --project-name smartstash-admin
 Sau đó, trong Cloudflare dashboard → **Zero Trust → Access → Applications →
 Add an application** (kiểu Self-hosted), trỏ tới domain Pages vừa tạo, chính
 sách **chỉ cho phép email của chủ app** (điền email thật của bạn, không dùng
-email mẫu). Đây là lớp bảo vệ chính thức của trang quản trị; việc PWA lưu
-`ADMIN_TOKEN` ở localStorage chỉ là biện pháp tạm cho trình duyệt quản trị.
+email mẫu). Đây là lớp bảo vệ cộng thêm trước trang quản trị; lớp bảo vệ
+chính là đăng nhập tài khoản + phân quyền ở mục 2.1.
 
-Trong PWA, nhập **địa chỉ Worker** và **ADMIN_TOKEN** ở mục "Kết nối" rồi bấm
-"Lưu kết nối". Cài PWA lên màn hình chính điện thoại: mở trang Pages trên
-trình duyệt di động → "Thêm vào màn hình chính".
+Trong PWA, nhập **địa chỉ Worker** ở mục "Kết nối" rồi bấm "Lưu kết nối"
+(nếu chưa có tài khoản nào, PWA hiện màn tạo tài khoản đầu tiên — cần mã
+`ADMIN_TOKEN` đúng một lần). Cài PWA lên màn hình chính điện thoại: mở trang
+Pages trên trình duyệt di động → "Thêm vào màn hình chính".
 
 ### 4.6. Chạy local để thử (không cần tài khoản Cloudflare)
 
@@ -175,7 +219,8 @@ npm install
 npm run dev
 # Worker chạy ở http://localhost:8787 (D1/KV local do wrangler tự tạo).
 # PWA: mở public/index.html bằng bất kỳ máy chủ tĩnh nào, vd: npx serve public
-# rồi nhập apiBase = http://localhost:8787 và ADMIN_TOKEN (đặt qua .dev.vars).
+# rồi nhập apiBase = http://localhost:8787; lần đầu PWA hiện màn tạo tài khoản
+# (cần ADMIN_TOKEN đặt qua .dev.vars).
 ```
 
 Với local dev, tạo file `.dev.vars` (đã có trong `.gitignore`, không commit)
@@ -223,12 +268,16 @@ Khi chuyển sang R2 sau này: thêm adapter mới tuân theo interface trong
 
 - Không bao giờ đưa `REVENUECAT_SECRET_KEY`, `ADMIN_TOKEN` hay thông tin xác
   thực Drive vào code, repo, PWA hay ảnh chụp màn hình.
-- Không dùng chung `ADMIN_TOKEN` cho nhiều người; đổi token khi nghi lộ
-  (`wrangler secret put ADMIN_TOKEN` rồi cập nhật trong PWA).
+- Không dùng chung tài khoản quản trị cho nhiều người — mỗi người một tài
+  khoản, đúng vai trò (mục 2.1). `ADMIN_TOKEN` chỉ dùng một lần cho setup
+  đầu tiên; lộ mã sau khi đã setup cũng không mở được API nào, nhưng vẫn
+  nên xoay lại (`wrangler secret put ADMIN_TOKEN`).
 - Không sửa/xoá dòng trong `redemptions` và `admin_audit` — đó là nhật ký kiểm
   toán, là căn cứ duy nhất khi có khiếu nại "đã nhập mã mà không được Pro".
-- Mọi endpoint quản trị đều kiểm tra token ở tầng router (`src/index.js`);
-  không thêm route ghi mới mà quên kiểm tra.
+- Theo SRS: bật/tắt mã, cấp/thu hồi quyền lợi và sửa cấu hình yêu cầu **lý do
+  ngắn bắt buộc** (thiếu lý do → 400); lý do nằm trong `detail` của dòng kiểm toán.
+- Mọi endpoint quản trị đều kiểm tra phiên + quyền ở tầng router
+  (`src/index.js`); không thêm route ghi mới mà quên kiểm tra.
 - Sao lưu D1 định kỳ ra nơi độc lập (mục tiêu RPO 24 giờ / RTO 4 giờ);
   test khôi phục hằng quý; xoay khoá 6 tháng/lần.
 

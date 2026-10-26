@@ -1,6 +1,6 @@
 import { kvGet, kvSet } from '../db/client';
 import {
-  countActiveItems, countLocations, createItem, createLoan, createLocation,
+  countRealActiveItems, countRealLocations, createItem, createLoan, createLocation,
   itemsInLocation, listLocations, listLoansForItem, returnLoan,
   setItemStatus, softDeleteItem, softDeleteLocation,
   convertLoanToConsignment,
@@ -138,8 +138,8 @@ export async function seedDemoData(): Promise<{ items: number; locations: number
   const createdItemIds: string[] = [];
   const createdItemsByName = new Map<string, string>();
 
-  // --- Vị trí mẫu (dừng êm khi chạm giới hạn gói) ---
-  let locRoom = getCurrentLimits().maxLocations - (await countLocations());
+  // --- Vị trí mẫu (dừng êm khi chạm giới hạn gói; trần chỉ đếm vị trí thật) ---
+  let locRoom = getCurrentLimits().maxLocations - (await countRealLocations());
   for (const spec of DEMO_LOCATIONS) {
     if (locRoom <= 0) {
       createdLocIds.push(null);
@@ -156,7 +156,7 @@ export async function seedDemoData(): Promise<{ items: number; locations: number
   }
 
   // --- Món mẫu ---
-  let itemRoom = getCurrentLimits().maxActiveItems - (await countActiveItems());
+  let itemRoom = getCurrentLimits().maxActiveItems - (await countRealActiveItems());
   for (const spec of DEMO_ITEMS) {
     if (itemRoom <= 0) break;
     const locationId = createdLocIds[spec.loc];

@@ -1,9 +1,10 @@
-import { getDb, ftsAvailable } from './client';
+import { getDb, ftsAvailable, kvGet } from './client';
 import type { Item, Location, Loan, MediaFile, ItemHistory, ItemStatus } from '../types';
 import { uuid, nowISO, removeDiacritics, toFtsPrefixQuery, formatVND } from '../utils';
 import { getCurrentLimits } from '../services/planService';
 import { getCurrentLang } from '../theme';
 import { translate } from '../i18n';
+import * as FileSystem from 'expo-file-system/legacy';
 
 // ===================== HISTORY =====================
 export async function logHistory(
@@ -429,6 +430,59 @@ export async function listDeletedItems(): Promise<Item[]> {
   return getDb().getAllAsync<Item>('SELECT * FROM items WHERE is_deleted = 1 ORDER BY deleted_at DESC');
 }
 
+/**
+ * Xoá VĨNH VIỄN các món khỏi thùng rác (không thể khôi phục — UI luôn hỏi
+ * xác nhận trước khi gọi). Vì PRAGMA foreign_keys = ON nên xoá row items
+ * kéo theo loans + item_history (ON DELETE CASCADE) và trigger FTS dọn chỉ
+ * mục; media_files KHÔNG có FK (owner_type/owner_id đa hình) nên xoá tay,
+ * kèm file ảnh trên đĩa (best-effort, chỉ file trong thư mục của app).
+ * Loans của món đã xoá mềm vốn đã đóng hết (softDeleteItem đóng các lượt
+ * mở), nên xoá kèm loans chỉ mất lịch sử cho mượn của món đó — đúng ý
+ * "vĩnh viễn": không còn gì trỏ vào món để hiển thị vỡ.
+ */
+export async function permanentDeleteItems(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const db = getDb();
+  const ph = ids.map(() => '?').join(',');
+  // Thu thập file ảnh TRƯỚC khi xoá row: ảnh thuộc món (owner ITEM — gồm
+  // cả ảnh hiện trường và ảnh giao nhận đăng ký theo món) + ảnh mà các lượt
+  // mượn của món trỏ tới (handover/return) nếu chúng không thuộc món.
+  const owned = await db.getAllAsync<{ local_uri: string; thumbnail_uri: string }>(
+    `SELECT local_uri, thumbnail_uri FROM media_files WHERE owner_type = 'ITEM' AND owner_id IN (${ph})`,
+    ids as never[],
+  );
+  const loanMedia = await db.getAllAsync<{ local_uri: string; thumbnail_uri: string }>(
+    `SELECT m.local_uri, m.thumbnail_uri FROM media_files m WHERE m.id IN (
+       SELECT handover_media_id FROM loans WHERE item_id IN (${ph}) AND handover_media_id IS NOT NULL
+       UNION SELECT return_media_id FROM loans WHERE item_id IN (${ph}) AND return_media_id IS NOT NULL
+     )`,
+    [...ids, ...ids] as never[],
+  );
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM media_files WHERE owner_type = 'ITEM' AND owner_id IN (${ph})`, ids as never[]);
+    await db.runAsync(
+      `DELETE FROM media_files WHERE id IN (
+         SELECT handover_media_id FROM loans WHERE item_id IN (${ph}) AND handover_media_id IS NOT NULL
+         UNION SELECT return_media_id FROM loans WHERE item_id IN (${ph}) AND return_media_id IS NOT NULL
+       )`,
+      [...ids, ...ids] as never[],
+    );
+    await db.runAsync(`DELETE FROM items WHERE id IN (${ph})`, ids as never[]);
+  });
+  // Dọn file trên đĩa: best-effort, chỉ file trong thư mục tài liệu của app.
+  const docDir = FileSystem.documentDirectory ?? '';
+  const uris = [...owned, ...loanMedia].flatMap((m) => [m.local_uri, m.thumbnail_uri]);
+  for (const uri of uris) {
+    try {
+      if (docDir && uri.startsWith(docDir)) {
+        await FileSystem.deleteAsync(uri, { idempotent: true });
+      }
+    } catch {
+      // dọn file là best-effort — row đã xoá, file sót không ảnh hưởng dữ liệu
+    }
+  }
+}
+
 export async function listItems(opts: { statusFilter?: string; locationIds?: string[] } = {}): Promise<Item[]> {
   const db = getDb();
   let sql = 'SELECT * FROM items WHERE is_deleted = 0';
@@ -489,6 +543,52 @@ export async function countActiveItems(): Promise<number> {
 
 export async function countLocations(): Promise<number> {
   const row = await getDb().getFirstAsync<{ c: number }>('SELECT COUNT(*) as c FROM locations WHERE is_deleted = 0');
+  return row?.c ?? 0;
+}
+
+/**
+ * Id dữ liệu mẫu trong app_kv 'demo_seed_ids' (ghi bởi demoData.seedDemoData).
+ * Đọc lỗi/hỏng → coi như không có mẫu (đếm thật = đếm tổng).
+ */
+async function getDemoSeedIds(): Promise<{ items: string[]; locations: string[] }> {
+  try {
+    const raw = await kvGet('demo_seed_ids');
+    if (!raw) return { items: [], locations: [] };
+    const parsed = JSON.parse(raw) as { items: unknown; locations: unknown };
+    return {
+      items: Array.isArray(parsed.items) ? (parsed.items as string[]) : [],
+      locations: Array.isArray(parsed.locations) ? (parsed.locations as string[]) : [],
+    };
+  } catch {
+    return { items: [], locations: [] };
+  }
+}
+
+/**
+ * Số món đang hoạt động THẬT (từ v75: trần gói chỉ đếm đồ thật, loại trừ
+ * dữ liệu mẫu — nếu tính cả ~30 món mẫu vào trần 30 thì người mới thử mẫu
+ * xong sẽ không thêm được đồ thật nào cho tới khi xoá mẫu).
+ */
+export async function countRealActiveItems(): Promise<number> {
+  const { items } = await getDemoSeedIds();
+  if (items.length === 0) return countActiveItems();
+  const placeholders = items.map(() => '?').join(',');
+  const row = await getDb().getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) as c FROM items WHERE is_deleted = 0 AND status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP','EXPIRED') AND id NOT IN (${placeholders})`,
+    items as never[],
+  );
+  return row?.c ?? 0;
+}
+
+/** Số vị trí THẬT (loại trừ vị trí mẫu, nhất quán với cách đếm món). */
+export async function countRealLocations(): Promise<number> {
+  const { locations } = await getDemoSeedIds();
+  if (locations.length === 0) return countLocations();
+  const placeholders = locations.map(() => '?').join(',');
+  const row = await getDb().getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) as c FROM locations WHERE is_deleted = 0 AND id NOT IN (${placeholders})`,
+    locations as never[],
+  );
   return row?.c ?? 0;
 }
 
@@ -836,7 +936,8 @@ export async function applyStatusWithQuantity(
       return;
     }
     // Tách món tạo thêm 1 bản ghi đang hoạt động — chạm trần gói thì dừng
-    if ((await countActiveItems()) >= getCurrentLimits().maxActiveItems) {
+    // (trần chỉ đếm đồ thật, không tính dữ liệu mẫu — xem countRealActiveItems)
+    if ((await countRealActiveItems()) >= getCurrentLimits().maxActiveItems) {
       throw new Error(translate(getCurrentLang(), 'qty.limitSplitMsg', { n: getCurrentLimits().maxActiveItems }));
     }
     await db.withTransactionAsync(async () => {

@@ -387,8 +387,14 @@ export default function LocationDetailScreen() {
           <Ionicons name="qr-code-outline" size={16} color={Colors.primaryDark} />
           <Text style={[styles.buttonSecondaryText, { fontSize: 13.5 }]}>{t('detail.printLabel')}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.buttonDanger, { paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handleDelete}>
-          <Text style={[styles.buttonDangerText, { fontSize: 13.5 }]}>{t('ld.delete')}</Text>
+        {/* v84 (đảo lại v83 theo yêu cầu mới): Xoá KHÔNG làm rộng nữa, về
+            lại hàng nút nhỏ — nhưng nền đổi hẳn sang đỏ đậm + chữ trắng
+            + icon thùng rác để nổi hơn nền hồng nhạt #FDECEC cũ, vẫn qua
+            handleDelete + popup xác nhận như cũ. Chỉ đổi nút này, không
+            đổi style buttonDanger dùng chung ở nơi khác. */}
+        <TouchableOpacity style={[styles.buttonDanger, { backgroundColor: Colors.danger, paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handleDelete}>
+          <Ionicons name="trash-outline" size={16} color="#fff" />
+          <Text style={[styles.buttonDangerText, { color: '#fff', fontSize: 13.5 }]}>{t('ld.delete')}</Text>
         </TouchableOpacity>
       </View>
 

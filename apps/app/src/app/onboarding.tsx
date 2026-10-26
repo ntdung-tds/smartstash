@@ -1,18 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, Dimensions, Animated, FlatList, Modal, Pressable, TextInput,
-  ActivityIndicator, Image, type ViewStyle,
+  Image, type ViewStyle,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, styles, AppButton, AppPopup, type IconName } from '@/components/ui';
 import { tint } from '@/theme';
-import { kvSet } from '@/db/client';
+import { kvGet, kvSet } from '@/db/client';
 import { useAppStore } from '@/store/useAppStore';
 import { useT } from '@/i18n';
 import {
-  connectDrive, hasDriveMasterKey, setupDriveMasterKey, DriveError, BackupError,
+  connectDrive, getDriveConnectionInfo, setupDriveMasterKey, DriveError, BackupError,
 } from '@/services/driveService';
+import { isDriveBackupEnabled } from '@/services/remoteConfigService';
 
 /**
  * Trang giới thiệu (mẫu v2 đã duyệt): nền tím sâu + orb màu TĨNH, 4 màn
@@ -27,10 +28,9 @@ import {
  *  3) Cho mượn / ký gửi: 3 thẻ tiến độ (có 1 thẻ quá hạn) + chip nhắc
  *     mốc + hàng 2 ô thống kê — các khối dàn đều khắp khung.
  *  4) Sao lưu & đồng bộ: 3 dòng tin cậy + thẻ "Sao lưu tự động hoạt
- *     động thế nào" + [Đăng nhập với Google] chạy
- *     đúng luồng Drive của Cài đặt (connectDrive native → chưa có khoá
- *     chính thì bước đặt mật khẩu sao lưu, bỏ qua được bằng "Để sau")
- *     hoặc [Tiếp tục không cần tài khoản] vào thẳng app.
+ *     động thế nào" + [Đăng nhập với Google] — v84 theo cờ quản trị:
+ *     cờ Drive tắt thì bấm chỉ báo đang khoá, cờ bật thì kết nối Drive
+ *     thật, hoặc [Tiếp tục không cần tài khoản] vào thẳng app.
  * "Bỏ qua" ở 3 màn đầu nhảy thẳng tới màn 4 (không kết thúc luôn).
  *
  * KHỬ LAG VUỐT (so với v43):
@@ -485,9 +485,9 @@ export default function OnboardingScreen() {
   const listRef = useRef<FlatList<number>>(null);
   const targetRef = useRef(0);
   const [page, setPage] = useState(0);
-  // Luồng Google Drive ở màn cuối: bận khi mở trình chọn tài khoản +
-  // popup lỗi dùng chung + bước đặt mật khẩu sao lưu (như Cài đặt)
-  const [googleBusy, setGoogleBusy] = useState(false);
+  // v84: nút Google ở màn cuối theo cờ quản trị (tắt = báo khoá, bật =
+  // kết nối Drive thật rồi mở bước đặt mật khẩu); popup dùng chung vẫn
+  // giữ cho các luồng khác.
   const [infoPopup, setInfoPopup] = useState<{ title: string; message?: string } | null>(null);
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState('');
@@ -528,30 +528,36 @@ export default function OnboardingScreen() {
   }
 
   /**
-   * Nút "Đăng nhập với Google" (màn cuối): ĐÚNG luồng Cài đặt —
-   * connectDrive() native; người dùng huỷ chọn tài khoản thì im lặng ở
-   * lại màn cuối; lỗi thật thì popup như Cài đặt. Kết nối xong mà máy
-   * chưa có khoá chính Drive thì mở bước ĐẶT MẬT KHẨU sao lưu trước khi
-   * hoàn tất giới thiệu (bỏ qua được bằng "Để sau").
+   * Nút "Đăng nhập với Google" (màn cuối) — v84 theo cờ quản trị:
+   * - Cờ drive_backup_enabled TẮT: chỉ báo đang khoá, KHÔNG đăng nhập.
+   * - Cờ BẬT: connectDrive() scope Drive như trước v82; kết nối xong mở
+   *   bước đặt mật khẩu sao lưu Drive, đồng thời đồng bộ avatar Google
+   *   vào avatar chung (cùng quy tắc như Cài đặt: chỉ lấp khi chưa có
+   *   avatar riêng hoặc avatar hiện tại đã là ảnh Google cũ).
+   * Người dùng vẫn vào app được bằng nút "Tiếp tục không cần tài khoản"
+   * ngay bên dưới; đổi mã khuyến mãi vẫn chạy trong Cài đặt bằng luồng
+   * đăng nhập scope cơ bản riêng.
    */
   async function handleGoogle() {
-    setGoogleBusy(true);
+    if (!isDriveBackupEnabled()) {
+      setInfoPopup({ title: t('drive.developingTitle'), message: t('drive.lockedMsg') });
+      return;
+    }
     try {
       const res = await connectDrive();
-      if (res.status === 'cancelled') return;
-      if (!(await hasDriveMasterKey())) {
-        setPw('');
-        setPwConfirm('');
-        setPwError(null);
-        setPwShow(false);
+      if (res.status === 'connected') {
+        const dconn = await getDriveConnectionInfo().catch(() => ({ connected: false, email: null, photo: null }));
+        if (dconn.photo) {
+          const current = await kvGet('avatar_uri');
+          if (!current || current.includes('googleusercontent.com')) {
+            await kvSet('avatar_uri', dconn.photo);
+          }
+        }
         setPwOpen(true);
-        return;
       }
-      await finish();
+      // 'cancelled' = đóng/huỷ bảng chọn: im lặng ở lại màn cuối
     } catch (e) {
       setInfoPopup({ title: t('drive.title'), message: driveErrorMessage(e) });
-    } finally {
-      setGoogleBusy(false);
     }
   }
 
@@ -689,23 +695,15 @@ export default function OnboardingScreen() {
         <ObRise active={active} delay={340} style={{ width: '100%' }}>
           <TouchableOpacity
             activeOpacity={0.85}
-            disabled={googleBusy}
             onPress={() => { handleGoogle().catch(() => {}); }}
             style={{
               height: 56, borderRadius: 999, backgroundColor: '#fff',
               flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
               shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 12, elevation: 5,
-              opacity: googleBusy ? 0.7 : 1,
             }}
           >
-            {googleBusy ? (
-              <ActivityIndicator color={Colors.primaryDark} />
-            ) : (
-              <>
-                <Image source={require('../../assets/images/google-g.png')} style={{ width: 20, height: 20 }} />
-                <Text style={{ color: Colors.primaryDark, fontSize: 15, fontWeight: '700' }}>{t('ob.googleBtn')}</Text>
-              </>
-            )}
+            <Image source={require('../../assets/images/google-g.png')} style={{ width: 20, height: 20 }} />
+            <Text style={{ color: Colors.primaryDark, fontSize: 15, fontWeight: '700' }}>{t('ob.googleBtn')}</Text>
           </TouchableOpacity>
           <Text style={{ marginTop: 7, fontSize: 11.5, color: 'rgba(255,255,255,0.65)', textAlign: 'center' }}>
             {t('ob.googleSub')}

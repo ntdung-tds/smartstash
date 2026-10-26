@@ -20,6 +20,24 @@ function eventExpirationMs(ev) {
   return raw ? new Date(Number(raw)).toISOString() : null;
 }
 
+// Trích trường doanh thu từ payload webhook — chỉ lấy những gì có thật,
+// thiếu thì NULL (tab Doanh thu ghi rõ nguồn, không bịa số).
+function revenueFields(ev, now) {
+  const priceRaw = ev.price ?? ev.price_in_purchased_currency ?? null;
+  const price = priceRaw === null || priceRaw === undefined || Number.isNaN(Number(priceRaw))
+    ? null : Number(priceRaw);
+  const tsRaw = ev.purchased_at_ms ?? ev.event_timestamp_ms ?? null;
+  return {
+    product_id: ev.product_id ?? ev.productId ?? null,
+    price,
+    currency: ev.currency ?? null,
+    store: ev.store ?? null,
+    country: ev.country ?? null,
+    period: ev.period_type ?? ev.period ?? null,
+    event_at: tsRaw ? new Date(Number(tsRaw)).toISOString() : now,
+  };
+}
+
 export async function handleRevenueCatWebhook(request, env) {
   if (!verifyWebhook(request, env)) {
     return err('unauthorized', 'Webhook không xác minh được nguồn.', 401);
@@ -44,10 +62,19 @@ export async function handleRevenueCatWebhook(request, env) {
   if (seen) return json({ ok: true, duplicate: true });
 
   const now = new Date().toISOString();
+  const rev = revenueFields(ev, now);
   const statements = [
     env.DB.prepare(
       'INSERT INTO webhook_events (event_id, type) VALUES (?, ?)'
     ).bind(eventId, type),
+    // Sự kiện doanh thu cho tab Doanh thu (Mảng 10). INSERT OR IGNORE để
+    // an toàn nếu event đã có dòng revenue từ lần xử lý trước.
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO revenue_events
+         (event_id, type, app_user_id, product_id, price, currency, store, country, period, event_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(eventId, type, appUserId || null, rev.product_id, rev.price, rev.currency,
+      rev.store, rev.country, rev.period, rev.event_at),
   ];
 
   if (appUserId) {

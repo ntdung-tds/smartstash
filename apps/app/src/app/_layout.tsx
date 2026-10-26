@@ -7,8 +7,10 @@ import { initDb, kvGet } from '@/db/client';
 import { seedIfEmpty } from '@/db/seed';
 import { useAppStore } from '@/store/useAppStore';
 import { ensureNotificationSetup, rescheduleAllReminders } from '@/services/notificationService';
+import * as Font from 'expo-font';
+import { BeVietnamPro_700Bold } from '@expo-google-fonts/be-vietnam-pro';
 import { loadPlan } from '@/services/planService';
-import { loadRemoteConfig } from '@/services/remoteConfigService';
+import { loadCachedRemoteConfig, loadRemoteConfig } from '@/services/remoteConfigService';
 import { runAutoDriveBackupIfDue } from '@/services/driveService';
 import { getLockConfig, hasPin } from '@/services/appLockService';
 import { AppLockScreen } from '@/components/AppLockScreen';
@@ -31,26 +33,38 @@ export default function RootLayout() {
   useEffect(() => {
     (async () => {
       try {
-        await initDb();
+        // FIX DELAY MỞ APP (v87): trước đây các bước chạy NỐI TIẾP và
+        // _layout await cả fetch cấu hình từ xa (timeout tới 8 giây) nên
+        // màn hình "Đang tải…" đứng rất lâu khi mạng chậm. Giờ chỉ những
+        // gì BẮT BUỘC mới chặn hiện giao diện, và chúng chạy song song:
+        // font (local) song song với initDb; sau DB thì taxonomy / ngôn
+        // ngữ / gói / cờ đã cache / cờ onboarding chạy cùng lúc. Mọi
+        // việc còn lại (fetch cờ mới, thông báo, sao lưu tự động) dời
+        // sang effect sau khi ready — xem useEffect bên dưới.
+        await Promise.all([
+          // Font tiếng Việt cho thanh "Thu gọn" (v86): Be Vietnam Pro 700 —
+          // dấu tiếng Việt (ọ, ộ…) hiển thị đúng, không bị font hệ thống
+          // làm xấu khi xếp dọc. Lỗi nạp thì thôi, thanh vẫn hiện bằng
+          // font hệ thống, không bao giờ chặn khởi động app.
+          Font.loadAsync({ BeVietnamPro_700Bold }).catch(() => {}),
+          initDb(),
+        ]);
         await seedIfEmpty();
-        await useAppStore.getState().loadTaxonomy();
-        await useAppStore.getState().loadLanguage();
-        await loadPlan();
-        // Cấu hình từ xa (công tắc vận hành): lỗi thì dùng mặc định trong
-        // code, không bao giờ chặn khởi động app
-        await loadRemoteConfig().catch(() => {});
-        const flag = await kvGet('onboarded');
-        useAppStore.getState().setOnboarded(flag === '1');
+        const store = useAppStore.getState();
+        const [flag] = await Promise.all([
+          kvGet('onboarded'),
+          store.loadTaxonomy(),
+          store.loadLanguage(),
+          loadPlan(),
+          // Chỉ đọc cờ ĐÃ CACHE trong máy (vài ms), không chạm mạng.
+          loadCachedRemoteConfig().catch(() => {}),
+        ]);
+        store.setOnboarded(flag === '1');
         // Mở app lạnh: khoá ngay nếu đã bật khoá + đã đặt PIN + đã qua onboarding
         if (flag === '1') {
           const cfg = await getLockConfig();
           if (cfg.lockEnabled && (await hasPin())) setLocked(true);
         }
-        ensureNotificationSetup().catch(() => {});
-        rescheduleAllReminders().catch(() => {});
-        // Tự động sao lưu Drive (BYOC) nếu đã bật + bản cuối quá 24 giờ —
-        // chạy nền, nuốt mọi lỗi, không bao giờ chặn hay làm phiền lúc mở app
-        runAutoDriveBackupIfDue().catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -58,6 +72,18 @@ export default function RootLayout() {
       }
     })();
   }, []);
+
+  // Việc nền sau khi giao diện đã hiện — không chặn lần mở app đầu tiên:
+  // fetch cờ mới từ máy chủ (Cài đặt vào lại cũng tự fetch lại nên cờ
+  // mới không bị lỡ), dựng thông báo, đồng bộ lịch nhắc, sao lưu Drive
+  // tự động nếu tới hạn. Tất cả nuốt lỗi, không làm phiền lúc mở app.
+  useEffect(() => {
+    if (!ready) return;
+    loadRemoteConfig().catch(() => {});
+    ensureNotificationSetup().catch(() => {});
+    rescheduleAllReminders().catch(() => {});
+    runAutoDriveBackupIfDue().catch(() => {});
+  }, [ready]);
 
   // Tự khoá khi rời app quá thời gian đã đặt (mặc định 0 = khoá ngay khi quay lại).
   // Chỉ theo mốc 'background' — KHÔNG dùng 'inactive' vì prompt sinh trắc trên iOS

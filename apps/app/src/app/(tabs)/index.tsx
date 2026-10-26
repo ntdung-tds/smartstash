@@ -349,7 +349,9 @@ export default function HomeScreen() {
   // thanh tự ẩn vì lúc đó không còn gì để thu gọn nữa.
   const shownCount = Math.min(visibleCount, items.length);
   const showCollapseRail = shownCount > COLLAPSE_TARGET;
-  const collapseRailLabel = t('home.showLess').toUpperCase().replace(/\s+/g, '').split('').join('\n');
+  // v85: giữ nguyên chữ thường của i18n ('Thu gọn' / 'Show less'), KHÔNG
+  // viết hoa toàn bộ nữa — chỉ bỏ khoảng trắng để xếp dọc từng ký tự.
+  const collapseRailLabel = t('home.showLess').replace(/\s+/g, '').split('').join('\n');
   const handleCollapseItems = useCallback(() => {
     setPageState({ sig: filterSig, count: COLLAPSE_TARGET });
     // Offset nội dung của tiêu đề mục = paddingTop của contentContainer (8)
@@ -1074,7 +1076,8 @@ export default function HomeScreen() {
           nội dung). Hàng đồ không có nút bấm riêng ở mép phải (cả thẻ là
           một TouchableOpacity, chevron chỉ là icon trang trí) nên thanh
           chỉ phủ một dải hẹp ~22dp ở mép thẻ, đúng như mẫu đã duyệt.
-          Chữ chạy dọc từng ký tự đứng thẳng ('THU GỌN' / 'SHOWLESS') —
+          Chữ chạy dọc từng ký tự đứng thẳng ('Thu gọn' / 'Show less'
+          bỏ khoảng trắng — giữ chữ thường, không viết hoa toàn bộ) —
           RN không có writing-mode nên xếp ký tự theo cột bằng '\n'. */}
       {showCollapseRail && (
         <TouchableOpacity
@@ -1083,6 +1086,8 @@ export default function HomeScreen() {
           accessibilityLabel={t('home.showLess')}
           style={{
             position: 'absolute', right: 0, top: '38%', zIndex: 10,
+            // Trả về bản cũ (người dùng chốt 26/10/2026 sau khi thử mẫu C):
+            // nền tím đậm, chữ + icon trắng, không viền.
             backgroundColor: Colors.primary,
             borderTopLeftRadius: 13, borderBottomLeftRadius: 13,
             paddingVertical: 12, paddingLeft: 7, paddingRight: 6,
@@ -1092,7 +1097,11 @@ export default function HomeScreen() {
           }}
         >
           <Ionicons name="chevron-up" size={13} color="#fff" />
-          <Text style={{ fontSize: 10.5, fontWeight: '800', lineHeight: 14, letterSpacing: 1, color: '#fff', textAlign: 'center' }}>
+          {/* v86: font Be Vietnam Pro 700 (đã nạp ở _layout) thay font hệ
+              thống — dấu tiếng Việt xếp dọc nhìn sạch hơn; bỏ fontWeight
+              800 (font đã đậm sẵn, tránh đậm nhân tạo) + nới lineHeight
+              lên 16 để dấu trên/dưới không bị chèn, bỏ letterSpacing. */}
+          <Text style={{ fontFamily: 'BeVietnamPro_700Bold', fontSize: 10.5, lineHeight: 16, color: '#fff', textAlign: 'center' }}>
             {collapseRailLabel}
           </Text>
         </TouchableOpacity>

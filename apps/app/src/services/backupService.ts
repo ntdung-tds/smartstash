@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { getDb } from '../db/client';
 import { decryptBackupText, encryptBackupText, BackupError } from './backupCrypto';
+import { compressImageForBackup } from './imageService';
 
 export { BackupError };
 
@@ -68,8 +69,13 @@ export interface BackupPayload {
   mediaFiles: { id: string; base64: string; thumbBase64: string | null }[];
 }
 
-/** Đọc toàn bộ dữ liệu nghiệp vụ + bytes ảnh (base64) thành payload */
-export async function collectData(): Promise<BackupPayload> {
+/**
+ * Đọc toàn bộ dữ liệu nghiệp vụ + bytes ảnh (base64) thành payload.
+ * opts.compressImages (mây của tôi): ảnh chính được nén thêm một bước
+ * (cạnh dài tối đa 1024px) trước khi đưa vào payload — ảnh gốc trên máy
+ * không bị đụng, file tạm nén xong sẽ xoá ngay.
+ */
+export async function collectData(opts?: { compressImages?: boolean }): Promise<BackupPayload> {
   const db = getDb();
   const tables: Record<string, Row[]> = {};
   for (const table of CONTENT_TABLES) {
@@ -81,9 +87,25 @@ export async function collectData(): Promise<BackupPayload> {
   const mediaFiles: BackupPayload['mediaFiles'] = [];
   for (const row of tables.media_files) {
     try {
-      const base64 = await FileSystem.readAsStringAsync(String(row.local_uri), {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      let sourceUri = String(row.local_uri);
+      let tempUri: string | null = null;
+      if (opts?.compressImages) {
+        const compressed = await compressImageForBackup(sourceUri);
+        if (compressed !== sourceUri) {
+          sourceUri = compressed;
+          tempUri = compressed;
+        }
+      }
+      let base64: string;
+      try {
+        base64 = await FileSystem.readAsStringAsync(sourceUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } finally {
+        if (tempUri) {
+          await FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => {});
+        }
+      }
       let thumbBase64: string | null = null;
       if (row.thumbnail_uri) {
         try {
@@ -174,9 +196,11 @@ export async function restoreData(payload: BackupPayload): Promise<void> {
   });
 }
 
-/** Tạo file .ssbak mã hoá rồi mở hộp thoại chia sẻ để người dùng cất file */
+/** Tạo file .ssbak mã hoá rồi mở hộp thoại chia sẻ để người dùng cất file.
+ * Ảnh trong file được nén như bản sao lưu mây (cạnh dài tối đa 1024px) để
+ * file nhẹ hơn — ảnh gốc trên máy không bị đụng. */
 export async function exportBackup(password: string): Promise<{ path: string; shared: boolean }> {
-  const payload = await collectData();
+  const payload = await collectData({ compressImages: true });
   const fileText = await encryptBackupText(JSON.stringify(payload), password);
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');

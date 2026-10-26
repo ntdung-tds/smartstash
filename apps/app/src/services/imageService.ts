@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Image, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -6,6 +6,13 @@ import * as Crypto from 'expo-crypto';
 import { uuid } from '../utils';
 import { registerMedia } from '../db/queries';
 import type { MediaFile, MediaKind } from '../types';
+import {
+  getBackupMaxEdge,
+  getBackupQuality,
+  getPhotoMaxEdge,
+  getPhotoQuality,
+  isBackupCompressEnabled,
+} from './remoteConfigService';
 
 const IMAGES_DIR = (FileSystem.documentDirectory ?? '') + 'images/';
 const THUMBS_DIR = (FileSystem.documentDirectory ?? '') + 'thumbs/';
@@ -105,8 +112,10 @@ export async function pickPhotos(limit: number): Promise<PickedPhoto[]> {
 }
 
 /**
- * Nén ảnh (cạnh dài tối đa 1280px, WebP trên Android / JPEG trên iOS — V21-10),
- * tạo thumbnail 300px, lưu vào thư mục app và đăng ký vào media_files.
+ * Nén ảnh lúc thêm (cạnh dài tối đa theo cờ photo_max_edge, mặc định
+ * 1280px; chất lượng theo cờ photo_quality, mặc định 0.75 — WebP trên
+ * Android / JPEG trên iOS, V21-10), tạo thumbnail 300px, lưu vào thư mục
+ * app và đăng ký vào media_files.
  */
 export async function processAndRegisterPhoto(
   photo: PickedPhoto,
@@ -121,10 +130,11 @@ export async function processAndRegisterPhoto(
   const ext = isWebP ? 'webp' : 'jpg';
   const format = isWebP ? ImageManipulator.SaveFormat.WEBP : ImageManipulator.SaveFormat.JPEG;
 
+  const maxEdge = getPhotoMaxEdge();
   const resized = await ImageManipulator.manipulateAsync(
     photo.uri,
-    photo.width > 1280 ? [{ resize: { width: 1280 } }] : [],
-    { compress: 0.75, format },
+    photo.width > maxEdge ? [{ resize: { width: maxEdge } }] : [],
+    { compress: getPhotoQuality(), format },
   );
   const destUri = `${IMAGES_DIR}${mediaId}.${ext}`;
   await FileSystem.copyAsync({ from: resized.uri, to: destUri });
@@ -158,4 +168,36 @@ export async function processAndRegisterPhoto(
     size_bytes: sizeBytes,
     is_primary: isPrimary,
   });
+}
+
+/**
+ * Nén ảnh cho bản sao lưu (cả 3 đường: mây, file .ssbak, Drive BYOC):
+ * cạnh dài tối đa theo cờ backup_max_edge (mặc định 1024px), JPEG theo cờ
+ * backup_quality (mặc định 0.7). Tắt cờ backup_compress_enabled = bản sao
+ * lưu giữ ảnh gốc (file nặng hơn). Ảnh GỐC trên máy không bị đụng — hàm
+ * trả về file TẠM trong cache (nơi gọi tự xoá sau khi đọc xong). Nếu ảnh
+ * đã nhỏ hơn cạnh tối đa hoặc bất kỳ bước nào lỗi, trả về URI gốc để bản
+ * sao lưu vẫn đủ dữ liệu.
+ */
+export async function compressImageForBackup(uri: string): Promise<string> {
+  if (!isBackupCompressEnabled()) return uri;
+  const maxEdge = getBackupMaxEdge();
+  try {
+    const { width, height } = await new Promise<{ width: number; height: number }>(
+      (resolve, reject) => Image.getSize(uri, (w, h) => resolve({ width: w, height: h }), reject),
+    );
+    const longEdge = Math.max(width, height);
+    if (longEdge <= maxEdge) return uri;
+    const actions =
+      width >= height ? [{ resize: { width: maxEdge } }] : [{ resize: { height: maxEdge } }];
+    const out = await ImageManipulator.manipulateAsync(uri, actions, {
+      compress: getBackupQuality(),
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+    const dest = `${FileSystem.cacheDirectory ?? ''}backup-img-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+    await FileSystem.copyAsync({ from: out.uri, to: dest });
+    return dest;
+  } catch {
+    return uri;
+  }
 }
