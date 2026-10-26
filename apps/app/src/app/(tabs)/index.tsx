@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { styles, Colors, ItemCard, SectionTitle, AddTermModal, AppButton, AppPopup, TAB_BAR_CLEARANCE, type AppPopupOption } from '@/components/ui';
 import { kvGet, kvSet } from '@/db/client';
 import { takePhoto, pickPhoto, saveAvatarImage, removeAvatarImage } from '@/services/imageService';
@@ -349,9 +350,6 @@ export default function HomeScreen() {
   // thanh tự ẩn vì lúc đó không còn gì để thu gọn nữa.
   const shownCount = Math.min(visibleCount, items.length);
   const showCollapseRail = shownCount > COLLAPSE_TARGET;
-  // v85: giữ nguyên chữ thường của i18n ('Thu gọn' / 'Show less'), KHÔNG
-  // viết hoa toàn bộ nữa — chỉ bỏ khoảng trắng để xếp dọc từng ký tự.
-  const collapseRailLabel = t('home.showLess').replace(/\s+/g, '').split('').join('\n');
   const handleCollapseItems = useCallback(() => {
     setPageState({ sig: filterSig, count: COLLAPSE_TARGET });
     // Offset nội dung của tiêu đề mục = paddingTop của contentContainer (8)
@@ -1070,40 +1068,35 @@ export default function HomeScreen() {
           )
         }
       />
-      {/* Thanh dọc THU GỌN (Mẫu B): capsule nổi sát mép phải, neo khoảng
-          giữa vùng danh sách (top 38% — đủ cao để khi cuộn tới đáy không
-          đè banner chân trang chứa cặp nút Thêm mới/Lên đầu trang ở cuối
-          nội dung). Hàng đồ không có nút bấm riêng ở mép phải (cả thẻ là
-          một TouchableOpacity, chevron chỉ là icon trang trí) nên thanh
-          chỉ phủ một dải hẹp ~22dp ở mép thẻ, đúng như mẫu đã duyệt.
-          Chữ chạy dọc từng ký tự đứng thẳng ('Thu gọn' / 'Show less'
-          bỏ khoảng trắng — giữ chữ thường, không viết hoa toàn bộ) —
-          RN không có writing-mode nên xếp ký tự theo cột bằng '\n'. */}
+      {/* Nút THU GỌN (Mẫu C4 — người dùng chốt 26/10/2026): nút tròn nổi
+          ở mép phải, neo khoảng giữa vùng danh sách (top 38% — đủ cao để
+          khi cuộn tới đáy không đè banner chân trang chứa cặp nút Thêm
+          mới/Lên đầu trang ở cuối nội dung). Chỉ icon, không chữ: nền
+          gradient dọc tím -> san hô (cùng dải màu chữ S trên logo),
+          icon chevron-up-outline trắng bo tròn (đẹp hơn chevron nhọn cũ).
+          Hàng đồ không có nút bấm riêng ở mép phải (cả thẻ là một
+          TouchableOpacity) nên nút chỉ phủ một vùng tròn ở mép thẻ. */}
       {showCollapseRail && (
         <TouchableOpacity
           onPress={handleCollapseItems}
           activeOpacity={0.85}
           accessibilityLabel={t('home.showLess')}
           style={{
-            position: 'absolute', right: 0, top: '38%', zIndex: 10,
-            // Trả về bản cũ (người dùng chốt 26/10/2026 sau khi thử mẫu C):
-            // nền tím đậm, chữ + icon trắng, không viền.
-            backgroundColor: Colors.primary,
-            borderTopLeftRadius: 13, borderBottomLeftRadius: 13,
-            paddingVertical: 12, paddingLeft: 7, paddingRight: 6,
-            alignItems: 'center', gap: 6,
-            shadowColor: Colors.primary, shadowOffset: { width: -3, height: 4 },
+            position: 'absolute', right: 14, top: '38%', zIndex: 10,
+            width: 54, height: 54, borderRadius: 27, overflow: 'hidden',
+            borderWidth: 2, borderColor: '#fff',
+            shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 },
             shadowOpacity: 0.35, shadowRadius: 10, elevation: 8,
           }}
         >
-          <Ionicons name="chevron-up" size={13} color="#fff" />
-          {/* v86: font Be Vietnam Pro 700 (đã nạp ở _layout) thay font hệ
-              thống — dấu tiếng Việt xếp dọc nhìn sạch hơn; bỏ fontWeight
-              800 (font đã đậm sẵn, tránh đậm nhân tạo) + nới lineHeight
-              lên 16 để dấu trên/dưới không bị chèn, bỏ letterSpacing. */}
-          <Text style={{ fontFamily: 'BeVietnamPro_700Bold', fontSize: 10.5, lineHeight: 16, color: '#fff', textAlign: 'center' }}>
-            {collapseRailLabel}
-          </Text>
+          <LinearGradient
+            colors={[Colors.primary, Colors.coral]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Ionicons name="chevron-up-outline" size={26} color="#fff" />
+          </LinearGradient>
         </TouchableOpacity>
       )}
       <BarcodeScannerModal
