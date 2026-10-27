@@ -324,9 +324,11 @@ function parseVersion(v: string): number[] {
 
 /**
  * true khi phiên bản hiện tại THẤP HƠN phiên bản tối thiểu yêu cầu.
- * So sánh từng đoạn số (1.9 < 1.10 xử lý đúng). Chỉ dùng để HIỆN BANNER
- * nhắc cập nhật trong Cài đặt — không chặn app (quyết định chặn là quyết
- * định sản phẩm, không tự đặt ở đây).
+ * So sánh từng đoạn số (1.9 < 1.10 xử lý đúng). Dùng cho cả banner nhắc
+ * trong Cài đặt VÀ màn hình chặn cứng ở _layout (chốt 27/10/2026: dưới
+ * min_version thì chặn app, không chỉ nhắc). Lưu ý: so sánh theo
+ * expo version — mỗi bản phát hành phải tăng patch (v104 = 0.1.1) thì
+ * min_version mới phân biệt được bản cũ/mới.
  */
 export function isUpdateRequired(minVersion: string | null): boolean {
   const current = getAppVersion();

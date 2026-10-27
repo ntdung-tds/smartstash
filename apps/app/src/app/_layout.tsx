@@ -1,6 +1,6 @@
 import '@/lib/cryptoPolyfill';
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, ActivityIndicator, AppState } from 'react-native';
+import { View, Text, ActivityIndicator, AppState, TouchableOpacity } from 'react-native';
 import { Stack, Redirect, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { initDb, kvGet } from '@/db/client';
@@ -10,7 +10,7 @@ import { ensureNotificationSetup, rescheduleAllReminders } from '@/services/noti
 import * as Font from 'expo-font';
 import { BeVietnamPro_700Bold } from '@expo-google-fonts/be-vietnam-pro';
 import { loadPlan } from '@/services/planService';
-import { loadCachedRemoteConfig, loadRemoteConfig } from '@/services/remoteConfigService';
+import { getAppVersion, getMinVersion, isUpdateRequired, loadCachedRemoteConfig, loadRemoteConfig } from '@/services/remoteConfigService';
 import { runAutoDriveBackupIfDue } from '@/services/driveService';
 import { getLockConfig, hasPin } from '@/services/appLockService';
 import { AppLockScreen } from '@/components/AppLockScreen';
@@ -27,6 +27,17 @@ export default function RootLayout() {
   const [error, setError] = useState<string | null>(null);
   // Khoá app (Phase 6): overlay phủ toàn app khi `locked`
   const [locked, setLocked] = useState(false);
+  // Chặn cứng (chốt 27/10/2026): bản thấp hơn min_version từ máy chủ thì
+  // không vào app được — hiện màn hình chặn thay cho toàn bộ navigator.
+  // Đánh giá từ cờ đã cache khi mở app + sau mỗi lần fetch cờ mới; nút
+  // 'Kiểm tra lại' trên màn hình chặn fetch lại để mở khoá khi quản trị
+  // đã hạ min_version. Chặn có hiệu lực từ lần mở app tiếp theo sau khi
+  // quản trị nâng min_version (app đang chạy không tự chặn giữa chừng).
+  const [blockedVersion, setBlockedVersion] = useState<string | null>(null);
+  const refreshBlock = () => {
+    const minV = getMinVersion();
+    setBlockedVersion(isUpdateRequired(minV) ? minV : null);
+  };
   const backgroundAtRef = useRef<number | null>(null);
   const pathname = usePathname();
 
@@ -79,7 +90,10 @@ export default function RootLayout() {
   // tự động nếu tới hạn. Tất cả nuốt lỗi, không làm phiền lúc mở app.
   useEffect(() => {
     if (!ready) return;
-    loadRemoteConfig().catch(() => {});
+    // Đánh giá từ cờ đã cache — để qua microtask để không setState đồng
+    // bộ trong effect (lint react-hooks/set-state-in-effect).
+    Promise.resolve().then(refreshBlock);
+    loadRemoteConfig().then(() => refreshBlock()).catch(() => {});
     ensureNotificationSetup().catch(() => {});
     rescheduleAllReminders().catch(() => {});
     runAutoDriveBackupIfDue().catch(() => {});
@@ -128,6 +142,28 @@ export default function RootLayout() {
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 8 }}>
         <Text style={{ fontSize: 17, fontWeight: '700', color: Colors.danger }}>{t('root.errorTitle')}</Text>
         <Text style={{ color: Colors.subtext, textAlign: 'center' }}>{error}</Text>
+      </View>
+    );
+  }
+
+  // Màn hình chặn cứng: đứng trên mọi màn hình (kể cả onboarding và khoá
+  // app) cho tới khi bản mới được cài hoặc quản trị hạ min_version.
+  // Chưa có Play Store nên hướng dẫn liên hệ email hỗ trợ để nhận bản mới.
+  if (blockedVersion) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28, gap: 12, backgroundColor: Colors.bg }}>
+        <Text style={{ fontSize: 21, fontWeight: '800', color: Colors.primaryDark, textAlign: 'center' }}>
+          {t('set.updateBlockedTitle')}
+        </Text>
+        <Text style={{ color: Colors.subtext, textAlign: 'center', lineHeight: 21 }}>
+          {t('set.updateBlockedBody', { cur: getAppVersion() ?? '?', v: blockedVersion, email: 'dungnt.apps@gmail.com' })}
+        </Text>
+        <TouchableOpacity
+          onPress={() => { loadRemoteConfig().then(() => refreshBlock()).catch(() => {}); }}
+          style={{ marginTop: 8, backgroundColor: Colors.primary, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 12 }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 15 }}>{t('set.updateCheckAgain')}</Text>
+        </TouchableOpacity>
       </View>
     );
   }
