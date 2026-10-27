@@ -1,4 +1,4 @@
-import { getDb, ftsAvailable, kvGet, kvSet } from './client';
+import { getDb, ftsAvailable, kvGet } from './client';
 import type { Item, Location, Loan, MediaFile, ItemHistory, ItemStatus } from '../types';
 import { uuid, nowISO, removeDiacritics, toFtsPrefixQuery, formatVND } from '../utils';
 import { getCurrentLimits } from '../services/planService';
@@ -695,40 +695,13 @@ export async function permanentDeleteItems(ids: string[]): Promise<void> {
   }
 }
 
-/**
- * Công tắc ẩn dữ liệu mẫu (v102, theo đề xuất đã được người dùng chốt):
- * app_kv 'hide_demo_data' = '1' → trang chủ + tìm kiếm ẩn các món mẫu
- * (không xoá dữ liệu — tắt công tắc là hiện lại). Vị trí mẫu vẫn hiện
- * trong cây vị trí; xoá dữ liệu mẫu thì mất cả món lẫn vị trí mẫu.
- */
-export async function getHideDemoData(): Promise<boolean> {
-  try {
-    return (await kvGet('hide_demo_data')) === '1';
-  } catch {
-    return false;
-  }
-}
-
-export async function setHideDemoData(on: boolean): Promise<void> {
-  await kvSet('hide_demo_data', on ? '1' : '0');
-}
-
-/** Mệnh đề loại trừ món mẫu (rỗng khi công tắc tắt hoặc chưa có mẫu). */
-async function demoExclusion(): Promise<{ clause: string; params: string[] }> {
-  if (!(await getHideDemoData())) return { clause: '', params: [] };
-  const { items } = await getDemoSeedIds();
-  if (items.length === 0) return { clause: '', params: [] };
-  return { clause: ` AND id NOT IN (${items.map(() => '?').join(',')})`, params: [...items] };
-}
-
 export async function listItems(opts: { statusFilter?: string; locationIds?: string[] } = {}): Promise<Item[]> {
   const db = getDb();
   let sql = 'SELECT * FROM items WHERE is_deleted = 0';
   const params: unknown[] = [];
-  const excl = await demoExclusion();
   if (opts.statusFilter === 'EXPIRING') {
-    sql += " AND expiry_date IS NOT NULL AND status IN ('STORED','IN_USE')" + excl.clause + ' ORDER BY expiry_date ASC';
-    return db.getAllAsync<Item>(sql, [...params, ...excl.params] as never[]);
+    sql += " AND expiry_date IS NOT NULL AND status IN ('STORED','IN_USE') ORDER BY expiry_date ASC";
+    return db.getAllAsync<Item>(sql, params as never[]);
   }
   if (opts.statusFilter && opts.statusFilter !== 'ALL') {
     sql += ' AND status = ?';
@@ -740,8 +713,8 @@ export async function listItems(opts: { statusFilter?: string; locationIds?: str
     sql += ` AND location_id IN (${opts.locationIds.map(() => '?').join(',')})`;
     params.push(...opts.locationIds);
   }
-  sql += excl.clause + ' ORDER BY updated_at DESC';
-  return db.getAllAsync<Item>(sql, [...params, ...excl.params] as never[]);
+  sql += ' ORDER BY updated_at DESC';
+  return db.getAllAsync<Item>(sql, params as never[]);
 }
 
 export async function searchItems(query: string): Promise<Item[]> {
@@ -752,13 +725,11 @@ export async function searchItems(query: string): Promise<Item[]> {
     const match = toFtsPrefixQuery(trimmed);
     if (match) {
       try {
-        const excl = await demoExclusion();
         return await db.getAllAsync<Item>(
           `SELECT i.* FROM items_fts f JOIN items i ON i.id = f.item_id
            WHERE f.items_fts MATCH ? AND i.is_deleted = 0 AND i.status NOT IN ('SOLD','GIFTED','DONATED','DISPOSED','LOST','USED_UP','EXPIRED')
-           ${excl.clause.replaceAll('id NOT IN', 'i.id NOT IN')}
            ORDER BY i.updated_at DESC`,
-          [match, ...excl.params],
+          [match],
         );
       } catch {
         // rơi xuống fallback bên dưới

@@ -67,6 +67,16 @@ export type PlanLimits = (typeof PLAN_LIMITS)[keyof typeof PLAN_LIMITS];
 export const ADMIN_WORKER_URL = 'https://smartstash-admin.iaict-platform.workers.dev';
 
 /**
+ * Trang web công khai của SmartStash (Cloudflare Pages, chốt 27/10/2026):
+ * trang chủ + chính sách + điều khoản + xoá tài khoản. Dùng cho màn hình
+ * đồng ý OAuth (Google verification) và listing Play Store sau này.
+ * URL dạng gọn (không .html) vì Pages redirect .html → dạng gọn.
+ */
+export const SITE_URL = 'https://smartstash-site.pages.dev';
+export const PRIVACY_URL = `${SITE_URL}/SmartStash_Privacy_Policy`;
+export const TERMS_URL = `${SITE_URL}/SmartStash_Terms`;
+
+/**
  * @deprecated Hai hằng này chỉ còn là giá trị mặc định khởi tạo. Từ Phase 6,
  * gói hiệu lực do src/services/planService.ts quyết định (getCurrentPlan /
  * getCurrentLimits) — KHÔNG import CURRENT_PLAN/CURRENT_LIMITS ở code mới.

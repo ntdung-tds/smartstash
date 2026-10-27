@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chính sách riêng tư — SmartStash / Privacy Policy — SmartStash</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+         margin: 0; padding: 24px 16px 48px; color: #1c1c1e; background: #ffffff; line-height: 1.6; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 1.6em; line-height: 1.3; margin-bottom: 0.2em; }
+  h2 { font-size: 1.2em; margin-top: 1.6em; border-bottom: 1px solid #e3e3e8; padding-bottom: 0.25em; }
+  p, li { font-size: 1em; }
+  ul { padding-left: 1.3em; }
+  .meta { color: #55565c; font-size: 0.95em; }
+  .note { background: #f2f2f7; border-radius: 8px; padding: 12px 16px; }
+  .placeholder { background: #fff3cd; border: 2px dashed #d39e00; border-radius: 6px;
+                 padding: 2px 8px; font-weight: 700; white-space: nowrap; }
+  .lang-sep { margin: 56px 0 8px; border: 0; border-top: 3px double #c7c7cc; }
+  .lang-label { text-align: center; color: #55565c; font-weight: 700; letter-spacing: 0.08em; }
+  footer { margin-top: 48px; color: #55565c; font-size: 0.9em; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+
+<!-- ============================ TIẾNG VIỆT ============================ -->
+<div lang="vi">
+<h1>Chính sách riêng tư — SmartStash</h1>
+<p class="meta">Ứng dụng SmartStash — Kho Đồ Số (Android)<br>
+Ngày hiệu lực: 24/10/2026 · Cập nhật lần cuối: 27/10/2026</p>
+
+<h2>1. Tổng quan</h2>
+<p>SmartStash được thiết kế theo nguyên tắc <strong>offline-first</strong> (ưu tiên ngoại tuyến):
+ứng dụng hoạt động ngay trên thiết bị của bạn: dữ liệu của bạn mặc định chỉ nằm trên thiết bị.
+Chỉ khi bạn chủ động dùng tính năng sao lưu lên mây của SmartStash hoặc đổi mã khuyến mại thì
+một phần dữ liệu mới được gửi tới máy chủ của nhà phát triển (xem mục 2, 3 và 5). Chính sách
+này mô tả dữ liệu ứng dụng chạm tới, dữ liệu đó nằm ở đâu và bạn kiểm soát nó như thế nào.</p>
+
+<h2>2. Dữ liệu đồ đạc của bạn</h2>
+<p>Thông tin bạn tạo trong ứng dụng — món đồ, vị trí, ghi chú, thông tin bảo hành và hình ảnh —
+được lưu <strong>trên thiết bị của bạn</strong>.</p>
+<p>Khi bạn chủ động bật tính năng đồng bộ, một bản sao lưu được lưu vào
+<strong>Google Drive của chính bạn</strong>, trong thư mục dữ liệu riêng của ứng dụng.
+Bản sao lưu được <strong>mã hoá bằng mật khẩu sao lưu do bạn tự đặt</strong> theo nguyên tắc
+<em>zero-knowledge</em>: nhà phát triển không có mật khẩu này, không đọc được nội dung bản sao lưu
+và không thể khôi phục hộ nếu bạn quên mật khẩu.</p>
+<p>Khi bạn chủ động bật sao lưu lên mây của SmartStash, một bản sao lưu mã hoá được lưu trên
+máy chủ của nhà phát triển (hạ tầng Cloudflare Workers + R2). Bản sao lưu được mã hoá bằng mật khẩu
+sao lưu do bạn tự đặt <strong>trước khi rời khỏi thiết bị</strong> theo nguyên tắc <em>zero-knowledge</em>:
+nhà phát triển không có mật khẩu này và không đọc được nội dung bản sao lưu. Máy chủ chỉ thấy tên
+file, dung lượng, ngày tải lên và mã tài khoản ẩn danh của bạn, dùng để giữ đúng số bản và hạn mức
+gói của bạn.</p>
+
+<h2>3. Tài khoản Google và đăng nhập</h2>
+<p>Đăng nhập Google được dùng cho hai mục đích: truy cập Google Drive của bạn để sao lưu và khôi
+phục (quyền truy cập bị giới hạn ở các tệp/thư mục dữ liệu do chính ứng dụng tạo ra — ứng dụng
+không truy cập các tệp khác trong Drive của bạn), và đổi mã khuyến mại.</p>
+<p>Khi bạn đổi mã khuyến mại, ứng dụng gửi email và định danh tài khoản Google của bạn tới máy chủ
+của nhà phát triển để ghi nhận quyền lợi (mã đã đổi, gói được tặng, hạn dùng). Thông tin này chỉ
+dùng để quản lý quyền lợi và đối chiếu yêu cầu xoá, không dùng cho tiếp thị. Ngoài luồng đổi mã
+khuyến mại này, email và tên hiển thị chỉ được dùng để hiển thị trạng thái đăng nhập ngay trên
+thiết bị.</p>
+
+<h2>4. Dữ liệu chúng tôi không thu thập ở thời điểm hiện tại</h2>
+<ul>
+  <li>Ứng dụng hiện <strong>không tích hợp SDK phân tích hành vi hay báo cáo lỗi (crash)</strong> nào,
+  và không chứa quảng cáo.</li>
+  <li>Ứng dụng có hệ thống tài khoản phía máy chủ của nhà phát triển cho hai mục đích: (a) tài khoản
+  sao lưu ẩn danh trên mây (mã tài khoản + mã hash token, không chứa tên hay email của bạn);
+  (b) hồ sơ đổi mã khuyến mại (email + định danh tài khoản Google, gói được tặng, hạn dùng).
+  Chúng tôi vẫn chưa kết nối dịch vụ quản lý gói đăng ký và không lưu trữ lịch sử mua hàng.</li>
+  <li>Chúng tôi không bán, cho thuê hay chia sẻ dữ liệu của bạn cho bên thứ ba vì mục đích tiếp thị.</li>
+</ul>
+
+<h2>5. Dữ liệu di chuyển khi nào</h2>
+<p>Dữ liệu chỉ di chuyển theo hành động của bạn: giữa thiết bị của bạn và tài khoản Google Drive
+của chính bạn khi bạn bật đồng bộ, sao lưu hoặc khôi phục; từ thiết bị lên máy chủ của nhà phát
+triển dưới dạng bản sao lưu đã mã hoá khi bạn bật sao lưu lên mây; và email + định danh tài khoản
+Google tới máy chủ của nhà phát triển khi bạn đổi mã khuyến mại. Ngoài ba luồng đó, ứng dụng
+không truyền dữ liệu đồ đạc của bạn ra ngoài thiết bị.</p>
+
+<h2>6. Lưu trữ và bảo mật</h2>
+<ul>
+  <li>Dữ liệu trên thiết bị nằm trong vùng lưu trữ riêng của ứng dụng trên hệ điều hành.</li>
+  <li>Bản sao lưu trên Google Drive được mã hoá trước khi rời khỏi thiết bị; khoá mã hoá suy ra từ
+  mật khẩu sao lưu mà chỉ bạn biết.</li>
+  <li>Bản sao lưu trên mây của SmartStash cũng được mã hoá trước khi rời khỏi thiết bị bằng mật khẩu
+  sao lưu mà chỉ bạn biết; nhà phát triển không giải mã được nội dung. Máy chủ giữ 2 bản mới nhất
+  và kiểm tra hạn mức theo gói đã ghi nhận cho tài khoản của bạn.</li>
+  <li>Bạn có thể bật khoá ứng dụng bằng mã PIN/sinh trắc học trong phần Cài đặt của ứng dụng.</li>
+</ul>
+
+<h2>7. Quyền của bạn và việc xoá dữ liệu</h2>
+<p>Vì dữ liệu nằm trên thiết bị và Google Drive của chính bạn, bạn toàn quyền xoá nó bất cứ lúc nào.
+Bản sao lưu trên mây của SmartStash và hồ sơ đổi mã không tự xoá khi bạn xoá ứng dụng: để xoá
+chúng, gửi yêu cầu tới email hỗ trợ (xem trang <a href="SmartStash_Delete_Account.html">Xoá tài khoản &amp; dữ liệu</a>),
+chúng tôi xử lý trong tối đa 30 ngày.</p>
+
+<h2>8. Trẻ em</h2>
+<p>SmartStash là ứng dụng quản lý đồ đạc gia đình, không hướng tới trẻ em dưới 13 tuổi và không
+cố ý thu thập dữ liệu của trẻ em.</p>
+
+<h2>9. Thay đổi chính sách này</h2>
+<p class="note">Khi các giai đoạn phát triển tiếp theo được mở (ví dụ: máy chủ của nhà phát triển,
+gói đăng ký trả phí, công cụ báo cáo lỗi), chính sách này sẽ được cập nhật và ghi rõ ngày cập nhật
+<strong>trước khi</strong> các thay đổi về dữ liệu đó có hiệu lực. Nội dung hiện tại chỉ phản ánh
+đúng cách ứng dụng đang hoạt động ở thời điểm ghi trên đầu trang.</p>
+
+<h2>10. Liên hệ</h2>
+<p>Mọi câu hỏi về chính sách riêng tư, vui lòng gửi tới email hỗ trợ:
+<span class="placeholder">dungnt.apps@gmail.com</span></p>
+</div>
+
+<hr class="lang-sep">
+<p class="lang-label">ENGLISH VERSION</p>
+
+<!-- ============================ ENGLISH ============================ -->
+<div lang="en">
+<h1>Privacy Policy — SmartStash</h1>
+<p class="meta">SmartStash app (Android)<br>
+Effective date: 24 October 2026 · Last updated: 27 October 2026</p>
+
+<h2>1. Overview</h2>
+<p>SmartStash is designed to be <strong>offline-first</strong>: the app works on your device, and your
+data stays on your device by default. Only when you actively use SmartStash cloud backup or redeem
+a promo code is some data sent to the developer's server (see sections 2, 3 and 5). This policy
+describes what data the app touches, where that data lives, and how you control it.</p>
+
+<h2>2. Your item data</h2>
+<p>Everything you create in the app — items, locations, notes, warranty information and photos —
+is stored <strong>on your device</strong>.</p>
+<p>If you choose to enable sync, an encrypted backup is stored in <strong>your own Google Drive</strong>,
+in the app's private data folder. The backup is <strong>encrypted with a backup password that you set</strong>,
+on a <em>zero-knowledge</em> basis: the developer does not have this password, cannot read the contents
+of your backup, and cannot recover it for you if you forget the password.</p>
+<p>If you actively enable SmartStash cloud backup, an encrypted backup is stored on the developer's
+server (Cloudflare Workers + R2 infrastructure). The backup is encrypted with a backup password
+that you set <strong>before it leaves your device</strong>, on a <em>zero-knowledge</em> basis: the
+developer does not have this password and cannot read the contents of your backup. The server only
+sees the file name, size, upload date and your anonymous account identifier, used to enforce the
+number of versions kept and your plan quota.</p>
+
+<h2>3. Google account and sign-in</h2>
+<p>Google sign-in is used for two purposes: accessing your Google Drive for backup and restore
+(access is limited to the data files/folder created by the app itself — the app does not access
+other files in your Drive), and redeeming promo codes.</p>
+<p>When you redeem a promo code, the app sends your Google account email and account identifier to
+the developer's server to record the entitlement (code redeemed, plan granted, expiry). This
+information is used only to manage entitlements and to verify deletion requests, never for
+marketing. Outside of the promo-redemption flow, your email and display name are used only to show
+the sign-in status on your device.</p>
+
+<h2>4. Data we do not currently collect</h2>
+<ul>
+  <li>The app currently contains <strong>no analytics or crash-reporting SDK</strong>, and no advertising.</li>
+  <li>The app has an account system on developer servers for two purposes: (a) an anonymous cloud
+  backup account (account identifier + token hash, containing neither your name nor your email);
+  (b) a promo-redemption record (Google email + account identifier, plan granted, expiry).
+  We are still not connected to any subscription-management service and do not store purchase history.</li>
+  <li>We do not sell, rent or share your data with third parties for marketing purposes.</li>
+</ul>
+
+<h2>5. When data moves</h2>
+<p>Data only moves at your direction: between your device and your own Google Drive account when you
+enable sync, back up or restore; from your device to the developer's server as an encrypted backup
+when you enable cloud backup; and your Google email + account identifier to the developer's server
+when you redeem a promo code. Outside of those three flows, the app does not transmit your item data
+off your device.</p>
+
+<h2>6. Storage and security</h2>
+<ul>
+  <li>On-device data is kept in the app's private storage area provided by the operating system.</li>
+  <li>Backups are encrypted on your device before they leave it; the encryption key is derived from
+  your backup password, which only you know.</li>
+  <li>SmartStash cloud backups are likewise encrypted before they leave your device with a backup
+  password only you know; the developer cannot decrypt their contents. The server keeps the 2 newest
+  versions and enforces the quota of the plan recorded for your account.</li>
+  <li>You can protect the app with a PIN/biometric lock in the app's Settings.</li>
+</ul>
+
+<h2>7. Your rights and data deletion</h2>
+<p>Because your data lives on your device and in your own Google Drive, you can delete it at any time.
+SmartStash cloud backups and promo records are not deleted automatically when you delete the app:
+to delete them, send a request to our support email (see the <a href="SmartStash_Delete_Account.html">Account &amp; Data Deletion</a> page);
+we process such requests within no more than 30 days.</p>
+
+<h2>8. Children</h2>
+<p>SmartStash is a household item-management app. It is not directed at children under 13 and does not
+knowingly collect data from children.</p>
+
+<h2>9. Changes to this policy</h2>
+<p class="note">When later development phases are released (for example: a developer-operated server,
+paid subscriptions, a crash-reporting tool), this policy will be updated, with the update date shown,
+<strong>before</strong> those data changes take effect. The content above reflects only how the app
+works as of the date at the top of this page.</p>
+
+<h2>10. Contact</h2>
+<p>For any privacy questions, please contact our support email:
+<span class="placeholder">dungnt.apps@gmail.com</span></p>
+</div>
+
+<footer>SmartStash — Privacy Policy · Effective 24/10/2026</footer>
+</main>
+</body>
+</html>

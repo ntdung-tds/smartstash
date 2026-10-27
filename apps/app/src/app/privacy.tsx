@@ -1,14 +1,16 @@
 import React from 'react';
-import { View, Text, ScrollView } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Linking } from 'react-native';
 import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { styles, Colors, ScreenHeader } from '@/components/ui';
 import { useT } from '@/i18n';
+import { PRIVACY_URL } from '@/config';
 
 /**
  * Trang Chính sách riêng tư — mở từ hàng "Chính sách riêng tư" trong
- * Cài đặt → Hỗ trợ & thông tin. Màn hình trong app (v71) thay cho link
- * web vì app chưa có hosting; nội dung chuyển trung thực từ trang chính
- * sách đã duyệt (không thêm cam kết mới).
+ * Cài đặt → Hỗ trợ & thông tin. Nội dung trong app khớp với bản web;
+ * cuối màn có link mở bản web đầy đủ (site Cloudflare Pages, chốt
+ * 27/10/2026 — dùng cho Google verification và listing Play sau này).
  */
 const SECTIONS = [
   { t: 'privacy.s1Title', b: 'privacy.s1Body' },
@@ -39,6 +41,13 @@ export default function PrivacyScreen() {
           <Text style={{ fontSize: 13.5, color: Colors.subtext, lineHeight: 20 }}>{t(item.b)}</Text>
         </View>
       ))}
+      <TouchableOpacity
+        style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}
+        onPress={() => { Linking.openURL(PRIVACY_URL).catch(() => {}); }}
+      >
+        <Ionicons name="open-outline" size={20} color={Colors.primary} />
+        <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '700', color: Colors.primary }}>{t('privacy.webLink')}</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }

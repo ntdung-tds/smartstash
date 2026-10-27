@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xoá tài khoản &amp; dữ liệu — SmartStash / Account &amp; Data Deletion — SmartStash</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+         margin: 0; padding: 24px 16px 48px; color: #1c1c1e; background: #ffffff; line-height: 1.6; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 1.6em; line-height: 1.3; margin-bottom: 0.2em; }
+  h2 { font-size: 1.2em; margin-top: 1.6em; border-bottom: 1px solid #e3e3e8; padding-bottom: 0.25em; }
+  p, li { font-size: 1em; }
+  ol, ul { padding-left: 1.3em; }
+  .meta { color: #55565c; font-size: 0.95em; }
+  .note { background: #f2f2f7; border-radius: 8px; padding: 12px 16px; }
+  .warn { background: #fdf0ef; border-radius: 8px; padding: 12px 16px; }
+  .placeholder { background: #fff3cd; border: 2px dashed #d39e00; border-radius: 6px;
+                 padding: 2px 8px; font-weight: 700; white-space: nowrap; }
+  .lang-sep { margin: 56px 0 8px; border: 0; border-top: 3px double #c7c7cc; }
+  .lang-label { text-align: center; color: #55565c; font-weight: 700; letter-spacing: 0.08em; }
+  footer { margin-top: 48px; color: #55565c; font-size: 0.9em; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+
+<!-- ============================ TIẾNG VIỆT ============================ -->
+<div lang="vi">
+<h1>Xoá tài khoản &amp; dữ liệu — SmartStash</h1>
+<p class="meta">Ứng dụng SmartStash — Kho Đồ Số (Android)<br>
+Ngày hiệu lực: 24/10/2026 · Cập nhật lần cuối: 27/10/2026</p>
+
+<p>SmartStash hoạt động theo mô hình offline-first: gần như toàn bộ dữ liệu của bạn nằm ở nơi
+chính bạn kiểm soát — trên thiết bị và trong Google Drive của bạn. Ngoại lệ duy nhất: khi bạn dùng
+sao lưu lên mây của SmartStash, máy chủ của nhà phát triển giữ một bản sao lưu đã mã hoá của bạn;
+và khi bạn đổi mã khuyến mại, máy chủ lưu hồ sơ đổi mã (email + định danh tài khoản Google).
+Trang này hướng dẫn cách xoá toàn bộ dữ liệu đó.</p>
+
+<h2>Phần A — Xoá dữ liệu của bạn (bạn tự thực hiện, có hiệu lực ngay)</h2>
+
+<h3>Bước 1: Ngắt kết nối Google Drive trong ứng dụng</h3>
+<ol>
+  <li>Mở SmartStash, vào mục <strong>Cài đặt</strong> (Settings).</li>
+  <li>Ở phần đồng bộ Google Drive, chọn <strong>Ngắt kết nối</strong> (Disconnect). Ứng dụng sẽ thu hồi
+  quyền truy cập Drive của chính nó trên thiết bị.</li>
+</ol>
+
+<h3>Bước 2: Xoá bản sao lưu trên Google Drive của bạn</h3>
+<ol>
+  <li>Mở Google Drive (trên điện thoại hoặc tại drive.google.com).</li>
+  <li>Vào <strong>Cài đặt</strong> (Settings) → <strong>Quản lý ứng dụng</strong> (Manage apps).</li>
+  <li>Tìm <strong>SmartStash</strong> và chọn <strong>Xoá dữ liệu ứng dụng ẩn</strong> (Delete hidden app data)
+  và/hoặc <strong>Ngắt kết nối khỏi Drive</strong> (Disconnect from Drive).</li>
+</ol>
+<p>Sau bước này, các bản sao lưu của SmartStash trong Drive của bạn bị xoá vĩnh viễn khỏi tài khoản Google của bạn.</p>
+
+<h3>Bước 3: Xoá dữ liệu trên thiết bị</h3>
+<ol>
+  <li>Để xoá toàn bộ dữ liệu trong ứng dụng: vào phần <strong>Cài đặt</strong> của SmartStash và dùng
+  chức năng xoá dữ liệu của ứng dụng (nếu có), hoặc</li>
+  <li>Vào Cài đặt của điện thoại → Ứng dụng → SmartStash → <strong>Xoá dữ liệu</strong> (Clear data),
+  hoặc gỡ cài đặt ứng dụng — dữ liệu cục bộ trên thiết bị sẽ bị xoá theo.</li>
+</ol>
+
+<p class="warn"><strong>Lưu ý quan trọng:</strong> Việc xoá là vĩnh viễn và không thể hoàn tác.
+Vì bản sao lưu được mã hoá bằng mật khẩu chỉ bạn biết (zero-knowledge), nhà phát triển
+<strong>không thể khôi phục dữ liệu hộ bạn</strong> trong bất kỳ trường hợp nào, kể cả khi bạn liên hệ hỗ trợ.</p>
+
+<h2>Phần B — Yêu cầu xoá hồ sơ phía nhà phát triển (qua email hỗ trợ)</h2>
+<p><strong>Tình trạng hiện tại:</strong> nhà phát triển <strong>có lưu giữ</strong> hai loại dữ liệu liên quan
+tới bạn trên hệ thống của mình: (a) các bản sao lưu lên mây của SmartStash — chỉ ở dạng đã mã hoá
+mà nhà phát triển không đọc được nội dung, kèm tên file, dung lượng, ngày tải lên và mã tài khoản
+ẩn danh; (b) hồ sơ đổi mã khuyến mại (email + định danh tài khoản Google, mã đã đổi, gói được tặng,
+hạn dùng). Chúng tôi không nắm giữ hồ sơ mua hàng (chưa kết nối dịch vụ quản lý gói đăng ký).</p>
+<p>Ứng dụng hiện chưa có nút tự xoá các bản sao trên máy chủ, vì vậy để xoá hai loại dữ liệu trên,
+hãy gửi yêu cầu tới email hỗ trợ:
+<span class="placeholder">dungnt.apps@gmail.com</span></p>
+<ul>
+  <li>Ghi rõ địa chỉ email tài khoản Google bạn dùng với SmartStash để chúng tôi đối chiếu.</li>
+  <li>Yêu cầu xoá sẽ được xử lý trong <strong>tối đa 30 ngày</strong> kể từ khi nhận được yêu cầu hợp lệ,
+  và chúng tôi sẽ phản hồi xác nhận qua email khi hoàn tất.</li>
+</ul>
+
+<h2>Liên hệ</h2>
+<p>Mọi thắc mắc về việc xoá dữ liệu, vui lòng liên hệ:
+<span class="placeholder">dungnt.apps@gmail.com</span><br>
+Xem thêm: <a href="SmartStash_Privacy_Policy.html">Chính sách riêng tư</a>.</p>
+</div>
+
+<hr class="lang-sep">
+<p class="lang-label">ENGLISH VERSION</p>
+
+<!-- ============================ ENGLISH ============================ -->
+<div lang="en">
+<h1>Account &amp; Data Deletion — SmartStash</h1>
+<p class="meta">SmartStash app (Android)<br>
+Effective date: 24 October 2026 · Last updated: 27 October 2026</p>
+
+<p>SmartStash is offline-first: almost all of your data lives where you control it — on your device
+and in your own Google Drive. The only exceptions: when you use SmartStash cloud backup, the
+developer's server holds an encrypted copy of your backup; and when you redeem a promo code, the
+server stores the redemption record (email + Google account identifier). This page explains how to
+delete all of it.</p>
+
+<h2>Part A — Delete your data (you do this yourself, effective immediately)</h2>
+
+<h3>Step 1: Disconnect Google Drive in the app</h3>
+<ol>
+  <li>Open SmartStash and go to <strong>Settings</strong>.</li>
+  <li>In the Google Drive sync section, choose <strong>Disconnect</strong>. The app will revoke its own
+  Drive access on the device.</li>
+</ol>
+
+<h3>Step 2: Delete the backups in your Google Drive</h3>
+<ol>
+  <li>Open Google Drive (on your phone or at drive.google.com).</li>
+  <li>Go to <strong>Settings</strong> → <strong>Manage apps</strong>.</li>
+  <li>Find <strong>SmartStash</strong> and choose <strong>Delete hidden app data</strong>
+  and/or <strong>Disconnect from Drive</strong>.</li>
+</ol>
+<p>After this step, SmartStash's backups in your Drive are permanently deleted from your Google account.</p>
+
+<h3>Step 3: Erase data on your device</h3>
+<ol>
+  <li>To erase everything inside the app, use the data-erasure function in SmartStash's
+  <strong>Settings</strong> (where available), or</li>
+  <li>Go to your phone's Settings → Apps → SmartStash → <strong>Clear data</strong>, or uninstall the app —
+  its local data on the device is removed accordingly.</li>
+</ol>
+
+<p class="warn"><strong>Important:</strong> Deletion is permanent and cannot be undone. Because backups are
+encrypted with a password only you know (zero-knowledge), the developer <strong>cannot recover your data
+for you</strong> under any circumstances, including if you contact support.</p>
+
+<h2>Part B — Request deletion of developer-held records (via support email)</h2>
+<p><strong>Current status:</strong> the developer <strong>does hold</strong> two kinds of data related to
+you on its systems: (a) SmartStash cloud backups — only in encrypted form whose contents the
+developer cannot read, plus file names, sizes, upload dates and an anonymous account identifier;
+(b) promo-redemption records (Google email + account identifier, code redeemed, plan granted,
+expiry). We hold no purchase records (no subscription-management service is connected yet).</p>
+<p>The app currently has no button to delete server-side copies itself, so to delete the two kinds
+of data above, send your request to our support email:
+<span class="placeholder">dungnt.apps@gmail.com</span></p>
+<ul>
+  <li>Please state the Google account email address you use with SmartStash so we can verify the request.</li>
+  <li>Deletion requests will be processed within <strong>no more than 30 days</strong> of receiving a valid
+  request, and we will confirm completion by email.</li>
+</ul>
+
+<h2>Contact</h2>
+<p>For any questions about data deletion, contact:
+<span class="placeholder">dungnt.apps@gmail.com</span><br>
+See also: <a href="SmartStash_Privacy_Policy.html">Privacy Policy</a>.</p>
+</div>
+
+<footer>SmartStash — Account &amp; Data Deletion · Effective 24/10/2026</footer>
+</main>
+</body>
+</html>

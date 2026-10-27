@@ -1,14 +1,17 @@
 import React from 'react';
-import { View, Text, ScrollView } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Linking } from 'react-native';
 import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { styles, Colors, ScreenHeader } from '@/components/ui';
 import { useT } from '@/i18n';
+import { TERMS_URL } from '@/config';
 
 /**
  * Trang Điều khoản sử dụng — mở từ hàng "Điều khoản sử dụng" trong
- * Cài đặt → Hỗ trợ & thông tin. Màn hình trong app (v71) thay cho link
- * web vì app chưa có hosting; nội dung ngắn gọn, trung thực theo đúng
- * thực tế app (không SLA, không hứa hẹn pháp lý vượt thực tế).
+ * Cài đặt → Hỗ trợ & thông tin. Nội dung trong app khớp với bản web;
+ * cuối màn có link mở bản web đầy đủ (site Cloudflare Pages, chốt
+ * 27/10/2026). Nội dung ngắn gọn, trung thực theo đúng thực tế app
+ * (không SLA, không hứa hẹn pháp lý vượt thực tế).
  */
 const SECTIONS = [
   { t: 'terms.s1Title', b: 'terms.s1Body' },
@@ -38,6 +41,13 @@ export default function TermsScreen() {
           <Text style={{ fontSize: 13.5, color: Colors.subtext, lineHeight: 20 }}>{t(item.b)}</Text>
         </View>
       ))}
+      <TouchableOpacity
+        style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}
+        onPress={() => { Linking.openURL(TERMS_URL).catch(() => {}); }}
+      >
+        <Ionicons name="open-outline" size={20} color={Colors.primary} />
+        <Text style={{ flex: 1, fontSize: 14.5, fontWeight: '700', color: Colors.primary }}>{t('terms.webLink')}</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
