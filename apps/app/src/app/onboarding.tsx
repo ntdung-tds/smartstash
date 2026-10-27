@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, Dimensions, Animated, FlatList, Modal, Pressable, TextInput,
-  Image, type ViewStyle,
+  Image, ScrollView, type ViewStyle,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -589,20 +589,35 @@ export default function OnboardingScreen() {
   /** Khung gốc của mỗi màn: đầu trang (huy hiệu + tiêu đề + mô tả) rồi tới phần nội dung flex:1 */
   function slideShell(index: number, icon: IconName, iconBg: string, iconSize: number, title: string, body: string, children: React.ReactNode) {
     const active = page === index;
+    // Màn hình BÉ (thấp và/hoặc hẹp): khung cũ là View cố định cao 100%,
+    // nội dung mỗi màn (vd màn 1: ô tìm kiếm + 4 chip ví dụ; màn 4: 3 dòng
+    // tin cậy + thẻ cách hoạt động + 2 nút) cao hơn phần còn lại sau đầu
+    // trang nên phần cuối bị CẮT mà không cuộn được — đúng lỗi "hiện
+    // không đầy đủ" trên máy nhỏ. Bọc trong ScrollView: màn đủ cao thì
+    // contentContainer flexGrow:1 giữ nguyên bố cục cũ (khung flex:1 lấp
+    // đầy phần còn lại), màn thấp thì cuộn dọc xem tiếp thay vì cắt.
+    // nestedScrollEnabled để vuốt dọc nhận cuộn trong, vuốt ngang vẫn
+    // sang màn kế của pager ngoài.
     return (
-      <View style={{ width: W, height: '100%', paddingHorizontal: 24, paddingTop: 36, paddingBottom: 14, alignItems: 'center' }}>
-        <ObRise active={active} delay={0}>
-          <LogoTile bg={iconBg}>
-            <Ionicons name={icon} size={iconSize} color="#fff" />
-          </LogoTile>
-        </ObRise>
-        <ObRise active={active} delay={80}>
-          <Text style={titleStyle}>{title}</Text>
-        </ObRise>
-        <ObRise active={active} delay={160}>
-          <Text style={bodyStyle}>{body}</Text>
-        </ObRise>
-        {children}
+      <View style={{ width: W, height: '100%' }}>
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 24, paddingTop: 36, paddingBottom: 14, alignItems: 'center' }}
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+        >
+          <ObRise active={active} delay={0}>
+            <LogoTile bg={iconBg}>
+              <Ionicons name={icon} size={iconSize} color="#fff" />
+            </LogoTile>
+          </ObRise>
+          <ObRise active={active} delay={80}>
+            <Text style={titleStyle}>{title}</Text>
+          </ObRise>
+          <ObRise active={active} delay={160}>
+            <Text style={bodyStyle}>{body}</Text>
+          </ObRise>
+          {children}
+        </ScrollView>
       </View>
     );
   }

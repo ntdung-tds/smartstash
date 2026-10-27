@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from './ui';
 import { useT } from '@/i18n';
@@ -83,16 +83,30 @@ export function AppLockScreen({ onUnlock }: { onUnlock: () => void }) {
     [bioReady ? 'bio' : 'empty', '0', 'del'],
   ];
 
+  // Màn hình BÉ (chiều cao thấp hoặc bề ngang hẹp): nội dung khoá cao
+  // ~670dp nên View căn giữa cố định sẽ CẮT logo ở trên và hàng phím
+  // cuối ở dưới — bọc trong ScrollView để màn thấp cuộn được thay vì cắt.
+  // Phím số co theo bề ngang thật: 3 phím + 2 khe 16 + đệm ngang 28×2
+  // vừa khít màn 320dp ở đúng 72, màn hẹp hơn thì phím thu lại thay vì tràn.
+  const { width: winW } = useWindowDimensions();
+  const keyW = Math.min(72, Math.floor((winW - 56 - 32) / 3));
+
   return (
     <View
       style={{
         position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999,
         backgroundColor: Colors.deep, overflow: 'hidden',
-        alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28, gap: 14,
       }}
     >
       <View pointerEvents="none" style={{ position: 'absolute', width: 260, height: 260, borderRadius: 130, backgroundColor: Colors.coral, opacity: 0.3, top: -110, right: -80 }} />
       <View pointerEvents="none" style={{ position: 'absolute', width: 190, height: 190, borderRadius: 95, backgroundColor: Colors.teal, opacity: 0.26, bottom: 120, left: -95 }} />
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1, alignItems: 'center', justifyContent: 'center',
+          paddingHorizontal: 28, paddingVertical: 24, gap: 14,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
       <View pointerEvents="none" style={{ position: 'absolute', width: 110, height: 110, borderRadius: 55, backgroundColor: Colors.pink, opacity: 0.25, top: 190, right: -45 }} />
 
       <View
@@ -137,14 +151,14 @@ export function AppLockScreen({ onUnlock }: { onUnlock: () => void }) {
         {rows.map((row, ri) => (
           <View key={ri} style={{ flexDirection: 'row', gap: 16 }}>
             {row.map((cell, ci) => {
-              if (cell === 'empty') return <View key={ci} style={{ width: 72, height: 60 }} />;
+              if (cell === 'empty') return <View key={ci} style={{ width: keyW, height: 60 }} />;
               if (cell === 'bio') {
                 return (
                   <TouchableOpacity
                     key={ci}
                     onPress={() => { tryBiometric().catch(() => {}); }}
                     activeOpacity={0.7}
-                    style={{ width: 72, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center' }}
+                    style={{ width: keyW, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center' }}
                   >
                     <Ionicons name="finger-print" size={30} color="#fff" />
                   </TouchableOpacity>
@@ -156,7 +170,7 @@ export function AppLockScreen({ onUnlock }: { onUnlock: () => void }) {
                     key={ci}
                     onPress={pressDelete}
                     activeOpacity={0.7}
-                    style={{ width: 72, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center' }}
+                    style={{ width: keyW, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center' }}
                   >
                     <Ionicons name="backspace-outline" size={27} color="#fff" />
                   </TouchableOpacity>
@@ -168,7 +182,7 @@ export function AppLockScreen({ onUnlock }: { onUnlock: () => void }) {
                   onPress={() => pressDigit(cell)}
                   activeOpacity={0.7}
                   style={{
-                    width: 72, height: 60, borderRadius: 30,
+                    width: keyW, height: 60, borderRadius: 30,
                     backgroundColor: 'rgba(255,255,255,0.10)',
                     alignItems: 'center', justifyContent: 'center',
                   }}
@@ -191,6 +205,7 @@ export function AppLockScreen({ onUnlock }: { onUnlock: () => void }) {
           <Text style={{ fontSize: 13.5, fontWeight: '700', color: Colors.onDarkMuted }}>{t('lock.useBiometric')}</Text>
         </TouchableOpacity>
       )}
+      </ScrollView>
     </View>
   );
 }
