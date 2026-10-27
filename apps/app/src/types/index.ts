@@ -249,7 +249,8 @@ export const CONDITION_HINTS: Record<ItemCondition, string> = {
   BROKEN: 'Hư hỏng nặng, hiện không sử dụng được.',
 };
 
-/** Loại vị trí suy từ độ sâu trong cây: gốc = Nơi ở → Phòng → Tủ/Kệ → Hộp (tối đa 4 cấp) */
+/** Loại vị trí suy từ độ sâu trong cây: gốc = Nơi ở → Phòng → Tủ/Kệ → Hộp;
+ *  từ cấp 5 trở đi vẫn là Hộp (không còn trần độ sâu từ 27/10/2026) */
 export const LOCATION_TYPE_BY_DEPTH: LocationType[] = ['PROPERTY', 'ROOM', 'FURNITURE', 'CONTAINER'];
 
 export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {

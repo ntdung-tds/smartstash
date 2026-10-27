@@ -80,7 +80,7 @@ export async function createLocation(input: {
     is_dirty: 1,
     deleted_at: null,
   };
-  // V21-04: kiểm tra độ sâu tối đa 4 cấp + chống vòng lặp
+  // V21-04: chống vòng lặp khi chọn cha (không còn trần độ sâu từ 27/10/2026)
   const err = await validateParent(db, null, loc.parent_id);
   if (err) throw new Error(err);
   await db.runAsync(
@@ -134,7 +134,10 @@ export async function reorderLocations(parentId: string | null, orderedIds: stri
   });
 }
 
-/** Trả về thông báo lỗi nếu parent không hợp lệ (vòng lặp hoặc quá 4 cấp), ngược lại null */
+/** Trả về thông báo lỗi nếu parent không hợp lệ (vòng lặp), ngược lại null.
+ *  KHÔNG còn giới hạn độ sâu (quyết định 27/10/2026: bỏ trần 4 cấp — cây
+ *  sâu bao nhiêu cũng được; chỉ giữ chống vòng lặp: không chọn chính mình
+ *  và không di chuyển vào chính vị trí con của nó). */
 export async function validateParent(
   db: ReturnType<typeof getDb>,
   locationId: string | null,
@@ -142,8 +145,7 @@ export async function validateParent(
 ): Promise<string | null> {
   if (!newParentId) return null;
   if (locationId && newParentId === locationId) return 'Không thể chọn chính vị trí này làm vị trí cha.';
-  // Đi lên từ parent mới: vừa đếm độ sâu, vừa kiểm tra vòng lặp
-  let depth = 1;
+  // Đi lên từ parent mới chỉ để kiểm tra vòng lặp (không đếm độ sâu nữa)
   let current: string | null = newParentId;
   const seen = new Set<string>();
   while (current) {
@@ -155,8 +157,6 @@ export async function validateParent(
       [current],
     );
     current = row?.parent_id ?? null;
-    depth += 1;
-    if (depth > 4) return 'Vị trí tối đa 4 cấp (Nơi ở > Phòng > Khu vực > Vật chứa).';
   }
   return null;
 }

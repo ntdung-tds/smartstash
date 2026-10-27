@@ -409,8 +409,9 @@ export function SceneImage({
  * (LOCATION_TYPE_BY_DEPTH), trần số vị trí theo gói, lỗi/trần gói báo qua
  * AppPopup và GIỮ NGUYÊN form để sửa tiếp. Khác biệt duy nhất: vị trí cha
  * được CHỌN ngay trong form này (ở tab Vị trí, cha đến từ nút "+" của đúng
- * hàng đó); cấp sâu nhất (Vật chứa) không nhận con nên không hiện trong
- * danh sách cha. Tạo xong trả vị trí mới qua onCreated để nơi gọi tự chọn
+ * hàng đó); mọi vị trí đều chọn được làm cha (không còn trần độ sâu từ
+ * 27/10/2026 — sâu bao nhiêu cũng được, từ cấp 5 trở đi loại vẫn là
+ * Vật chứa). Tạo xong trả vị trí mới qua onCreated để nơi gọi tự chọn
  * ngay — không rời khỏi luồng đang làm dở.
  */
 export function CreateLocationModal({
@@ -457,7 +458,11 @@ export function CreateLocationModal({
   const parent = parentId ? locations.find((l) => l.id === parentId) ?? null : null;
   const parentDepth = parent ? flat.find((f) => f.loc.id === parent.id)?.depth ?? 0 : -1;
   const derivedType: LocationType = LOCATION_TYPE_BY_DEPTH[Math.min(3, parentDepth + 1)];
-  const parentOptions = flat.filter(({ depth }) => depth <= 2);
+  // Không còn trần độ sâu (27/10/2026): mọi vị trí đều chọn được làm cha,
+  // kể cả vị trí cấp 4 trở đi — trước đây lọc depth <= 2 nên con của vị
+  // trí cấp 4 không tạo được từ form này mà phải chọn cha khác, vị trí
+  // mới (và đồ vật theo đó) rơi sang chỗ khác.
+  const parentOptions = flat;
 
   async function handleCreate() {
     if (!name.trim() || creating) return;
