@@ -8,6 +8,7 @@ import { json, err, readJson, nowIso } from '../lib/http.js';
 import {
   normalizeEmail, newId, hashPassword, verifyPassword, createSession,
   revokeSessions, audit, loginRateLimitOk, timingSafeEqual, sha256Hex,
+  loginIpBlockRemainingMs, recordLoginIpFailure, clearLoginIpFailures,
   MIN_PASSWORD_LEN,
 } from '../lib/adminAuth.js';
 
@@ -88,6 +89,14 @@ export async function login(request, env) {
   const email = normalizeEmail(body.email);
   const password = String(body.password ?? '');
   if (!email || !password) return err('invalid_fields', 'Cần có email và mật khẩu.', 400);
+  // Chặn theo IP trước (27/10/2026): IP đã sai 5 lần trong 24h thì từ chối
+  // luôn, không ghi log, không tốn lượt của lớp theo email, không gia hạn.
+  const ip = clientIp(request);
+  const ipBlockedMs = await loginIpBlockRemainingMs(env, ip);
+  if (ipBlockedMs > 0) {
+    const hours = Math.max(1, Math.ceil(ipBlockedMs / 3600000));
+    return err('ip_blocked', `IP này đã nhập sai quá 5 lần. Vui lòng thử lại sau khoảng ${hours} giờ.`, 429);
+  }
   if (!(await loginRateLimitOk(env, email))) {
     return err('rate_limited', 'Đăng nhập sai quá nhiều lần. Thử lại sau 15 phút.', 429);
   }
@@ -95,16 +104,19 @@ export async function login(request, env) {
   const WRONG = err('unauthorized', 'Email hoặc mật khẩu không đúng.', 401);
   if (!user || user.active !== 1) {
     await logLogin(env, request, email, user ? user.id : null, false, 'invalid_credentials');
+    await recordLoginIpFailure(env, ip);
     return WRONG;
   }
   if (!(await verifyPassword(password, user.password_hash))) {
     await logLogin(env, request, email, user.id, false, 'invalid_credentials');
+    await recordLoginIpFailure(env, ip);
     return WRONG;
   }
   const session = await createSession(env, user.id);
   await env.DB.prepare('UPDATE admin_users SET last_login_at = ? WHERE id = ?').bind(nowIso(), user.id).run();
   await audit(env, email, 'admin_login', email, null);
   await logLogin(env, request, email, user.id, true, null);
+  await clearLoginIpFailures(env, ip);
   return json({ ok: true, token: session.token, expires_at: session.expires_at, user: { email: user.email, role: user.role } });
 }
 

@@ -179,6 +179,56 @@ export async function loginRateLimitOk(env, email, limit = 10, windowSec = 900) 
   return true;
 }
 
+// Chống dò mật khẩu theo IP (27/10/2026): tối đa 5 lần đăng nhập SAI / 24h / IP.
+// Cửa sổ CỐ ĐỊNH tính từ lần sai đầu tiên — các lần bị chặn không ghi đếm nên
+// không gia hạn khoá; đăng nhập đúng xoá đếm của IP đó. Giữ chung với lớp theo
+// email ở trên: lớp email chặn dò một tài khoản từ nhiều IP, lớp IP chặn dò
+// nhiều tài khoản (spam) từ một IP. IP null (không đọc được header) thì bỏ qua
+// lớp này — không gom mọi request không IP vào chung một bucket.
+// Khôi phục khi bị khoá oan: đổi mạng khác (IP khác) hoặc chờ hết 24h.
+export const IP_FAIL_LIMIT = 5;
+export const IP_FAIL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function ipFailKey(ip) {
+  return `ratelimit:login:ip:${ip}`;
+}
+
+async function readIpFailRecord(env, ip) {
+  if (!env.CONFIG || !ip) return null;
+  const raw = await env.CONFIG.get(ipFailKey(ip));
+  if (!raw) return null;
+  try {
+    const rec = JSON.parse(raw);
+    if (rec && typeof rec.count === 'number' && typeof rec.firstAt === 'number') return rec;
+  } catch {}
+  return null;
+}
+
+/** Số ms còn lại của lệnh chặn IP (0 = không bị chặn). */
+export async function loginIpBlockRemainingMs(env, ip) {
+  const rec = await readIpFailRecord(env, ip);
+  if (!rec || rec.count < IP_FAIL_LIMIT) return 0;
+  const until = rec.firstAt + IP_FAIL_WINDOW_MS;
+  return until > Date.now() ? until - Date.now() : 0;
+}
+
+/** Ghi một lần đăng nhập sai từ IP (chỉ gọi sau khi đã kiểm tra mật khẩu thật). */
+export async function recordLoginIpFailure(env, ip) {
+  if (!env.CONFIG || !ip) return;
+  const now = Date.now();
+  const rec = await readIpFailRecord(env, ip);
+  const next = (!rec || now >= rec.firstAt + IP_FAIL_WINDOW_MS)
+    ? { count: 1, firstAt: now }
+    : { count: rec.count + 1, firstAt: rec.firstAt };
+  await env.CONFIG.put(ipFailKey(ip), JSON.stringify(next), { expirationTtl: 90000 });
+}
+
+/** Đăng nhập đúng: xoá đếm sai của IP đó. */
+export async function clearLoginIpFailures(env, ip) {
+  if (!env.CONFIG || !ip) return;
+  await env.CONFIG.delete(ipFailKey(ip));
+}
+
 export function publicUser(row) {
   return {
     id: row.id,
