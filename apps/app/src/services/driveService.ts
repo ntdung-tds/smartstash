@@ -59,6 +59,7 @@ export class DriveError extends Error {
     | 'PASSWORD_REQUIRED'
     | 'AUTH'
     | 'NETWORK'
+    | 'QUOTA'
     | 'PLAY_SERVICES';
 
   constructor(code: DriveError['code'], message: string) {
@@ -424,7 +425,22 @@ export async function uploadDriveBackup(name: string, content: string): Promise<
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
     body,
   });
-  if (!res.ok) throw new DriveError('NETWORK', `Drive upload lỗi ${res.status}`);
+  if (!res.ok) {
+    // v102: Drive đầy trả 403 + reason storageQuotaExceeded — báo rõ thay
+    // vì gộp chung vào lỗi mạng (người dùng cần biết để giải phóng Drive).
+    if (res.status === 403) {
+      try {
+        const errBody = (await res.clone().text()) as string;
+        if (errBody.includes('storageQuotaExceeded')) {
+          throw new DriveError('QUOTA', 'Bộ nhớ Google Drive đã đầy');
+        }
+      } catch (e) {
+        if (e instanceof DriveError) throw e;
+        // đọc body lỗi thất bại → rơi xuống lỗi chung bên dưới
+      }
+    }
+    throw new DriveError('NETWORK', `Drive upload lỗi ${res.status}`);
+  }
   return (await res.json()) as DriveBackupFile;
 }
 

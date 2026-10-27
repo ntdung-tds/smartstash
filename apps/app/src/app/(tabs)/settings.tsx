@@ -12,6 +12,7 @@ import {
   countRealActiveItems, countRealLocations, listItems, listDeletedItems, restoreItem, permanentDeleteItems, getBreadcrumb, breadcrumbText,
   findItemByBarcode, findLocationByQrCode,
   getDeletedLocations, countDeletedInSubtree, restoreLocation, permanentDeleteLocation, getLocation,
+  getHideDemoData, setHideDemoData,
 } from '@/db/queries';
 import { ftsAvailable, kvGet, kvSet } from '@/db/client';
 import { useAppStore } from '@/store/useAppStore';
@@ -262,6 +263,7 @@ export default function SettingsScreen() {
   const [exporting, setExporting] = useState(false);
   const [demoExists, setDemoExists] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [hideDemo, setHideDemo] = useState(false);
   const [showClearDemoPopup, setShowClearDemoPopup] = useState(false);
   // Popup thông báo/lỗi dùng chung (1 nút "Đã hiểu") thay hộp thoại hệ thống
   const [infoPopup, setInfoPopup] = useState<{ title: string; message?: string } | null>(null);
@@ -391,6 +393,7 @@ export default function SettingsScreen() {
     setLocCount(await countRealLocations());
     setTrash(await listDeletedItems());
     setDemoExists(!!(await kvGet('demo_seed_ids')));
+    setHideDemo(await getHideDemoData());
     // Thẻ tài khoản ở đầu màn chính: avatar bền trong app_kv (cùng cách màn
     // Home đang dùng) — chỉ hiển thị, không tạo hệ thống tài khoản mới
     const av = await kvGet('avatar_uri');
@@ -1072,6 +1075,7 @@ export default function SettingsScreen() {
       if (e.code === 'AUTH') return t('drive.authErr');
       if (e.code === 'PLAY_SERVICES') return t('drive.playServicesErr');
       if (e.code === 'NOT_CONFIGURED') return t('drive.notConfigured');
+      if (e.code === 'QUOTA') return t('drive.quotaErr');
     }
     return e instanceof Error ? e.message : String(e);
   }
@@ -1754,6 +1758,11 @@ export default function SettingsScreen() {
           <IOSTile icon="logo-google" color={Colors.sky} size={44} iconSize={22} />
           <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('drive.title')}</Text>
         </View>
+        {/* v102: cảnh báo dung lượng Drive — chỉ hiện khi Drive đã mở
+            (lúc khoá chỉ hiện thông báo khoá, không thêm dòng này). */}
+        {driveBackupEnabled && (
+          <Text style={{ color: Colors.subtext, fontSize: 13, lineHeight: 19 }}>{t('drive.storageNote')}</Text>
+        )}
         {!driveBackupEnabled ? (
           /* v84: Drive đang khoá bởi quản trị — chỉ hiện thông báo khoá,
              không hiện nút kết nối (bấm vào cũng không đăng nhập được). */
@@ -1964,6 +1973,21 @@ export default function SettingsScreen() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
               <Ionicons name="checkmark-circle" size={17} color={Colors.green} />
               <Text style={{ fontSize: 13, fontWeight: '600', color: Colors.text }}>{t('settings.demoExists')}</Text>
+            </View>
+            {/* v102: công tắc ẩn dữ liệu mẫu — ẩn món mẫu khỏi trang chủ +
+                tìm kiếm (không xoá dữ liệu, tắt là hiện lại). Chỉ hiện khi
+                đã có dữ liệu mẫu; vị trí mẫu vẫn hiện trong cây vị trí. */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14.5, fontWeight: '600', color: Colors.text }}>{t('settings.hideDemo')}</Text>
+                <Text style={{ color: Colors.subtext, fontSize: 12.5, lineHeight: 18 }}>{t('settings.hideDemoDesc')}</Text>
+              </View>
+              <Switch
+                value={hideDemo}
+                onValueChange={(v) => { setHideDemo(v); setHideDemoData(v).then(() => bump()).catch(() => {}); }}
+                trackColor={{ false: Colors.chipBg, true: Colors.primary }}
+                thumbColor="#fff"
+              />
             </View>
             <AppButton
               title={t('settings.demoDelete')}
