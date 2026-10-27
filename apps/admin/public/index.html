@@ -223,6 +223,7 @@
             <label>Lý do (bắt buộc, ghi vào kiểm toán) <input name="reason" required placeholder="VD: Hỗ trợ khách, tặng bù sự cố"></label>
             <button type="submit">Cấp quyền lợi</button>
           </form>
+          <p>Số ngày cộng dồn vào hạn tặng hiện có (nếu còn hạn); hạn tặng tối đa 3 năm tính từ hôm nay. Tài khoản đang trả phí vẫn giữ nguyên gói trả phí — quyền tặng chờ phía sau, có hiệu lực khi gói trả phí hết hạn.</p>
           <p id="grantMsg" class="status"></p>
         </div>
         <div class="card">
@@ -233,6 +234,7 @@
             <label>Lý do (bắt buộc, ghi vào kiểm toán) <input name="reason" required placeholder="VD: Mã bị lộ, thu hồi theo yêu cầu"></label>
             <button type="submit">Thu hồi</button>
           </form>
+          <p>Thu hồi xoá quyền tặng (kể cả quyền đang chờ sau gói trả phí); gói trả phí không bị ảnh hưởng. Muốn thu hồi riêng 1 lượt đổi mã thì dùng nút Thu hồi ở nhật ký đổi mã, đừng dùng form này.</p>
           <p id="revokeMsg" class="status"></p>
         </div>
       </section>

@@ -1197,14 +1197,16 @@
           reason: f.reason.value,
         }),
       });
-      setStatus($('grantMsg'), 'Đã cấp ' + d.entitlement + ' tới ' + fmtDate(d.expires_at) + '.', true);
+      setStatus($('grantMsg'), 'Đã cấp ' + d.entitlement + ' tới ' + fmtDate(d.expires_at) + '.' +
+        (d.clamped ? ' (Đã giới hạn ở trần tối đa 3 năm.)' : ''), true);
+      try { if ($('accountSearch').value.trim() === f.account_id.value.trim()) await loadAccountDetail(); } catch (e) {}
     } catch (e) { setStatus($('grantMsg'), 'Lỗi: ' + e.message, false); }
   });
   $('revokeForm').addEventListener('submit', async function (ev) {
     ev.preventDefault();
     var f = ev.target;
     try {
-      await api('/api/entitlements/revoke', {
+      var d = await api('/api/entitlements/revoke', {
         method: 'POST',
         body: JSON.stringify({
           account_id: f.account_id.value,
@@ -1212,7 +1214,10 @@
           reason: f.reason.value,
         }),
       });
-      setStatus($('revokeMsg'), 'Đã thu hồi quyền lợi tặng.', true);
+      setStatus($('revokeMsg'), d.revoked
+        ? 'Đã thu hồi quyền lợi tặng.'
+        : 'Không có gì để thu hồi: tài khoản không có quyền lợi tặng đang hiệu lực.', true);
+      try { if ($('accountSearch').value.trim() === f.account_id.value.trim()) await loadAccountDetail(); } catch (e) {}
     } catch (e) { setStatus($('revokeMsg'), 'Lỗi: ' + e.message, false); }
   });
 
