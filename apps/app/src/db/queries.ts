@@ -403,11 +403,19 @@ export async function permanentDeleteLocation(id: string): Promise<void> {
 /** Đường dẫn đầy đủ từ gốc tới vị trí (recursive CTE, đi từ dưới lên) */
 export async function getBreadcrumb(locationId: string | null): Promise<Location[]> {
   if (!locationId) return [];
+  // KHÔNG dùng SELECT * ở đây: bảng locations đã có thêm cột trash_meta
+  // (v93) nên SELECT * trả 20 giá trị cho CTE chỉ khai 19 cột → SQLite
+  // báo lỗi, load() ở màn chi tiết món/vị trí chết ngay tại breadcrumb
+  // (trước cả khi nạp ảnh và danh sách đồ) — đó là lý do màn chi tiết
+  // Gà hiện "Chưa có vị trí" + trống ảnh và màn chi tiết Mập hiện 0 món
+  // dù tab Vị trí vẫn đếm đúng. Liệt kê cột tường minh thì thêm cột sau
+  // này cũng không phá truy vấn nữa.
+  const cols = 'id, parent_id, name, type, description, scene_media_id, qr_code, latitude, longitude, address, household_id, created_at, updated_at, is_deleted, is_dirty, deleted_at, icon, sort_order';
   const rows = await getDb().getAllAsync<Location>(
     `WITH RECURSIVE up(id, parent_id, name, type, description, scene_media_id, qr_code, latitude, longitude, address, household_id, created_at, updated_at, is_deleted, is_dirty, deleted_at, icon, sort_order, depth) AS (
-       SELECT *, 0 FROM locations WHERE id = ?
+       SELECT ${cols}, 0 FROM locations WHERE id = ?
        UNION ALL
-       SELECT l.*, up.depth + 1 FROM locations l JOIN up ON l.id = up.parent_id
+       SELECT ${cols.split(', ').map((c) => `l.${c}`).join(', ')}, up.depth + 1 FROM locations l JOIN up ON l.id = up.parent_id
      )
      SELECT * FROM up ORDER BY depth DESC`,
     [locationId],
