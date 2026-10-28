@@ -12,6 +12,8 @@ import { listLocations, createItem, updateItem, updateMediaPin, countRealActiveI
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { kvGet, kvSet } from '@/db/client';
 import { takePhoto, pickPhotos, processAndRegisterPhoto, type PickedPhoto } from '@/services/imageService';
+import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync } from 'expo-audio';
+import { aiDescribePhoto, aiTranscribeAndParse, AiError } from '@/services/aiService';
 import { scheduleExpiryReminders, rescheduleAllReminders } from '@/services/notificationService';
 import { useT } from '@/i18n';
 import { useAppStore } from '@/store/useAppStore';
@@ -173,6 +175,77 @@ export default function QuickAddScreen() {
   // báo/lỗi 1 nút "Đã hiểu"; có options = danh sách lựa chọn AppPopup
   const [popup, setPopup] = useState<{ title: string; message?: string; options?: AppPopupOption[] } | null>(null);
   const showInfo = (title: string, message?: string) => setPopup({ title, message });
+  // AI (Gemini miễn phí): ghi âm bằng expo-audio, ảnh dùng ảnh đầu tiên
+  // của bucket đồ vật. Form luôn là bước xác nhận cuối: AI chỉ điền sẵn,
+  // người dùng sửa rồi mới bấm Lưu — không lưu thẳng từ kết quả AI.
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [recording, setRecording] = useState(false);
+  const [aiBusy, setAiBusy] = useState<null | 'voice' | 'photo'>(null);
+
+  /** Mic: bấm lần 1 ghi, bấm lần 2 dừng → nghe → điền form. */
+  async function handleMic() {
+    if (aiBusy) return;
+    if (recording) {
+      try { await recorder.stop(); } catch {}
+      setRecording(false);
+      const uri = recorder.uri;
+      if (!uri) return;
+      setAiBusy('voice');
+      try {
+        const d = await aiTranscribeAndParse(uri);
+        if (d.name) setName(d.name);
+        setQuantity(String(d.quantity));
+        setUnit(d.unit);
+        setCategory(d.category);
+        setCondition(d.condition);
+        if (d.position_note) setPositionNote(d.position_note);
+        showInfo(t('ai.voiceHeard'), d.transcript || undefined);
+      } catch (e) {
+        showInfo(t('ai.error'), e instanceof AiError ? e.message : e instanceof Error ? e.message : String(e));
+      } finally {
+        setAiBusy(null);
+      }
+      return;
+    }
+    try {
+      const perm = await requestRecordingPermissionsAsync();
+      if (!perm.granted) { showInfo(t('ai.error'), t('ai.micDenied')); return; }
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setRecording(true);
+    } catch (e) {
+      showInfo(t('ai.error'), e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** AI nhìn ảnh đồ vật đầu tiên → popup gợi ý, bấm Áp dụng mới điền form. */
+  async function handlePhotoAi() {
+    if (aiBusy || photos.length === 0) return;
+    try {
+      setAiBusy('photo');
+      const d = await aiDescribePhoto(photos[0].picked.uri);
+      if (!d.name) { showInfo(t('ai.suggestTitle'), t('ai.photoNoGuess')); return; }
+      setPopup({
+        title: t('ai.suggestTitle'),
+        message: `${d.name}${d.note ? `\n${d.note}` : ''}`,
+        options: [{
+          label: t('ai.apply'),
+          icon: 'sparkles-outline',
+          onPress: () => {
+            setName(d.name);
+            setCategory(d.category);
+            setCondition(d.condition);
+            if (d.note) setConditionNote(d.note);
+            setPopup(null);
+          },
+        }],
+      });
+    } catch (e) {
+      showInfo(t('ai.error'), e instanceof AiError ? e.message : e instanceof Error ? e.message : String(e));
+    } finally {
+      setAiBusy(null);
+    }
+  }
   const bump = useAppStore((s) => s.bump);
   const customCategories = useAppStore((s) => s.customCategories);
   const customConditions = useAppStore((s) => s.customConditions);
@@ -492,6 +565,38 @@ export default function QuickAddScreen() {
           limitText={t('photos.limitMsg', { n: itemPhotoLimit })}
           focusKey={itemFocusKey}
         />
+
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          <TouchableOpacity
+            style={{
+              flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+              height: 52, borderRadius: 14,
+              backgroundColor: recording ? tint(Colors.coral, '26') : tint(Colors.primary, '12'),
+              opacity: aiBusy === 'photo' ? 0.5 : 1,
+            }}
+            disabled={aiBusy === 'photo'}
+            onPress={() => { handleMic().catch(() => {}); }}
+          >
+            <Ionicons name={recording ? 'stop-circle' : 'mic-outline'} size={20} color={recording ? Colors.coral : Colors.primary} />
+            <Text style={{ fontSize: 14, fontWeight: '700', color: recording ? Colors.coral : Colors.primary }}>
+              {recording ? t('ai.recording') : aiBusy === 'voice' ? t('ai.transcribing') : t('ai.micBtn')}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{
+              flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+              height: 52, borderRadius: 14, backgroundColor: tint(Colors.primary, '12'),
+              opacity: photos.length === 0 || aiBusy ? 0.5 : 1,
+            }}
+            disabled={photos.length === 0 || aiBusy !== null}
+            onPress={() => { handlePhotoAi().catch(() => {}); }}
+          >
+            <Ionicons name="sparkles-outline" size={20} color={Colors.primary} />
+            <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.primary }}>
+              {aiBusy === 'photo' ? t('ai.photoWorking') : t('ai.photoBtn')}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         <View ref={nameFieldRef} collapsable={false}>
           <Field label={t('qa.nameLabel')}>

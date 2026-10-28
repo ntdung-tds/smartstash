@@ -51,6 +51,7 @@ import * as entitlementRoutes from './routes/entitlements.js';
 import * as configRoutes from './routes/config.js';
 import * as backupRoutes from './routes/backups.js';
 import * as webhookRoutes from './routes/webhooks.js';
+import * as aiRoutes from './routes/ai.js';
 
 function corsHeaders() {
   return {
@@ -88,6 +89,8 @@ export default {
         response = json({ ok: true, service: 'smartstash-admin' });
       } else if (path === '/api/config' && method === 'GET') {
         response = json(await configRoutes.getFlags(env));
+      } else if (path === '/api/ai' && method === 'POST') {
+        response = await aiRoutes.handleAi(request, env);
       } else if (path === '/api/promo/redeem' && method === 'POST') {
         response = await promoRoutes.redeem(request, env);
       } else if (path === '/api/promo/status' && method === 'GET') {

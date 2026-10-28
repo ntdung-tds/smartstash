@@ -2,7 +2,7 @@
   "expo": {
     "name": "SmartStash",
     "slug": "smartstash-app",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -85,7 +85,8 @@
           "iosUrlScheme": "com.googleusercontent.apps.276230190448-pvkfnsm6m9tu06fm6falp04d994h5qbk"
         }
       ],
-      "react-native-quick-crypto"
+      "react-native-quick-crypto",
+      "expo-audio"
     ],
     "experiments": {
       "reactCompiler": true

@@ -44,6 +44,7 @@ import {
   type CloudUsage,
 } from '@/services/cloudBackupService';
 import { getAppVersion, getMaintenanceNotice, getMinVersion, getRemoteFlagsSync, getStoragePlans, isCloudBackupEnabled, isDriveBackupEnabled, isUpdateRequired, loadRemoteConfig, type StoragePlan } from '@/services/remoteConfigService';
+
 import { getPromoIdToken, redeemPromoCodeViaServer, syncPlanFromServer } from '@/services/promoService';
 import { categoryLabel, statusLabel, tint, cardShadow, type IconName } from '@/theme';
 import { SCHEMA_VERSION } from '@/db/schema';
@@ -266,6 +267,7 @@ export default function SettingsScreen() {
   // Popup thông báo/lỗi dùng chung (1 nút "Đã hiểu") thay hộp thoại hệ thống
   const [infoPopup, setInfoPopup] = useState<{ title: string; message?: string } | null>(null);
   const showInfo = (title: string, message?: string) => setInfoPopup({ title, message });
+
   const [alertCfgState, setAlertCfgState] = useState<AlertSettings | null>(null);
   // Sao lưu & khôi phục (Phase 5 lõi): mật khẩu chỉ sống trong state tạm,
   // xoá ngay sau khi dùng — KHÔNG lưu vào DB/kv/file
@@ -964,6 +966,8 @@ export default function SettingsScreen() {
       load();
     }, [load, refreshTick]),
   );
+
+
 
   /** Mở modal mật khẩu sao lưu (tạo mới hoặc nhập để khôi phục) */
   function openPwModal(mode: 'export' | 'import') {
@@ -2077,6 +2081,26 @@ export default function SettingsScreen() {
           mở màn hình trong app (v71) thay vì link web vì chưa hosting. */}
       {activePanel === 'support' && (
       <>
+      <Text style={{ fontSize: 15, fontWeight: '800', color: Colors.text }}>{t('ai.title')}</Text>
+      <View style={[styles.card, { gap: 12 }]}>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
+          onPress={() => router.push('/assistant')}
+          activeOpacity={0.7}
+        >
+          <IOSTile icon="chatbubble-ellipses-outline" color={Colors.primary} size={44} iconSize={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.text }}>{t('ai.chatBtn')}</Text>
+            <Text style={{ fontSize: 12, color: Colors.subtext, marginTop: 1 }}>{t('ai.noSetup')}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color={Colors.subtext} />
+        </TouchableOpacity>
+        <View style={{ height: 1, backgroundColor: '#F0EDFA' }} />
+        <View style={{ gap: 6 }}>
+          <Text style={{ fontSize: 12.5, color: Colors.subtext, lineHeight: 18 }}>{t('ai.limitNote')}</Text>
+          <Text style={{ fontSize: 12.5, color: Colors.subtext, lineHeight: 18 }}>{t('ai.freeNote')}</Text>
+        </View>
+      </View>
       <Text style={{ fontSize: 15, fontWeight: '800', color: Colors.text }}>{t('set.supGroupSupport')}</Text>
       <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
         <TouchableOpacity
