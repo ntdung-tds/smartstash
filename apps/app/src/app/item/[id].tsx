@@ -1043,6 +1043,7 @@ export default function ItemDetailScreen() {
             </Text>
           );
         })()}
+        <Text style={{ fontSize: 13, color: Colors.subtext }}>{t('detail.createdAt')}: {formatDateForLang(item.created_at, lang)}</Text>
       </View>
 
       <View style={{ gap: 10 }}>
