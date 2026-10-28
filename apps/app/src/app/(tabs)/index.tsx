@@ -1049,7 +1049,6 @@ export default function HomeScreen() {
             breadcrumb={crumbs[item.id] ?? ''}
             thumbUri={thumbs[item.id]}
             outInfo={outMap[item.id]}
-            showAddedDate
             onPress={() => router.push(`/item/${item.id}`)}
           />
         )}

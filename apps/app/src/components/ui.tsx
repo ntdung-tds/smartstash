@@ -221,15 +221,13 @@ export function StatusBadge({ status, lentInfo }: { status: string; lentInfo?: s
  * Dùng chung cho thẻ món (ItemCard) và đầu màn chi tiết đồ để nhất quán.
  */
 export function QtyBreakdown({
-  total, unit, lentOut = 0, consignedOut = 0, size = 13, suffix,
+  total, unit, lentOut = 0, consignedOut = 0, size = 13,
 }: {
   total: number;
   unit: string;
   lentOut?: number;
   consignedOut?: number;
   size?: number;
-  /** Chuỗi nối thêm cuối dòng SL (vd ngày thêm trên thẻ món ở màn chính) */
-  suffix?: string;
 }) {
   const lang = useAppStore((s) => s.lang);
   const out = lentOut + consignedOut;
@@ -240,7 +238,6 @@ export function QtyBreakdown({
     return (
       <Text style={{ fontSize: size, color: Colors.subtext, lineHeight: size + 6 }}>
         {translate(lang, 'qty.sl')} {num(total)} {unit}
-        {suffix ? <Text>{' · '}{suffix}</Text> : null}
       </Text>
     );
   }
@@ -261,20 +258,18 @@ export function QtyBreakdown({
       <Text>
         {' · '}{translate(lang, 'qty.atHome')} {num(available)}
       </Text>
-      {suffix ? <Text>{' · '}{suffix}</Text> : null}
     </Text>
   );
 }
 
 export function ItemCard({
-  item, breadcrumb, thumbUri, onPress, outInfo, showAddedDate,
+  item, breadcrumb, thumbUri, onPress, outInfo,
 }: {
   item: Item;
   breadcrumb: string;
   thumbUri?: string | null;
   onPress: () => void;
-  /** Chỉ màn chính bật: nối ngày thêm vào cuối dòng SL (không icon) */
-  showAddedDate?: boolean;
+
   /**
    * Cơ cấu đang ở ngoài của món, do màn cha tính từ loans ACTIVE đã tải sẵn
    * (không truyền thì thẻ chỉ hiện tổng số — vd màn chi tiết vị trí không
@@ -315,7 +310,6 @@ export function ItemCard({
           lentOut={outInfo?.lentOut ?? 0}
           consignedOut={outInfo?.consignedOut ?? 0}
           size={12.5}
-          suffix={showAddedDate ? `${translate(lang, 'detail.addedAt')}: ${formatDateForLang(item.created_at, lang)}` : undefined}
         />
         <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <StatusBadge
