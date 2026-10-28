@@ -6,20 +6,22 @@ import { json, err, readJson } from '../lib/http.js';
 // Variables and Secrets; KHÔNG nằm trong code, repo hay app) rồi gọi Google.
 //
 // Giới hạn để khỏi cháy quota free chung. Quota Gemini tính theo PROJECT
-// (không phải theo key) nên 1 key dùng chung cho mọi khách: Gemini 2.5
-// Flash free ~250 request/ngày. Vì vậy Worker chặn 2 tầng bằng KV CONFIG
-// (key tự hết hạn sau 25h):
-//   - mỗi máy (accountId ẩn danh của app): 20 lượt/ngày
-//   - toàn hệ thống: 200 lượt/ngày (chừa 50 lượt đệm dưới trần 250)
+// (không phải theo key) nên 1 key dùng chung cho mọi khách. Model chốt
+// 28/10/2026 là Flash-Lite (free ~1000 request/ngày, vẫn nhận chữ + ảnh
+// + tiếng) thay cho Flash (chỉ ~250/ngày — 100 lượt/máy nuôi được có 2
+// máy nặng). Vì vậy Worker chặn 2 tầng bằng KV CONFIG (key tự hết hạn
+// sau 25h):
+//   - mỗi máy (accountId ẩn danh của app): 100 lượt/ngày
+//   - toàn hệ thống: 800 lượt/ngày (chừa 200 lượt đệm dưới trần 1000)
 // Vượt → 429, app hiện rõ lý do. Chưa gắn secret → 503, app báo AI chưa
 // được bật. Chỉ lượt gọi Gemini THÀNH CÔNG mới tính vào hạn mức (lỗi
 // mạng/key sai không đốt lượt của khách). Đếm KV không nguyên tử nên
 // con số là chặn mềm, đủ cho mục đích chống cháy quota — không phải
 // thanh toán nên không cần chính xác tuyệt đối.
 
-const MODEL = 'gemini-2.5-flash';
-const PER_DEVICE_PER_DAY = 20;
-const GLOBAL_PER_DAY = 200;
+const MODEL = 'gemini-2.5-flash-lite';
+const PER_DEVICE_PER_DAY = 100;
+const GLOBAL_PER_DAY = 800;
 
 const CATEGORIES = ['ELECTRONICS', 'MEDICINE', 'FOOD', 'KITCHENWARE', 'DOCUMENTS', 'CLOTHING', 'TOOLS', 'KIDS', 'HOUSEHOLD', 'SPORTS', 'BOOKS', 'OTHER'];
 const CONDITIONS = ['NEW', 'GOOD', 'WORN', 'NEED_REPAIR', 'BROKEN'];
@@ -66,7 +68,7 @@ export async function handleAi(request, env) {
   const gloKey = `ai:day:${day}:global`;
   const devCount = parseInt((await kv.get(devKey)) || '0', 10);
   if (devCount >= PER_DEVICE_PER_DAY) {
-    return err('ai_limit', 'Hôm nay bạn đã dùng hết 20 lượt AI miễn phí, mai thử lại nhé.', 429);
+    return err('ai_limit', 'Hôm nay bạn đã dùng hết 100 lượt AI miễn phí, mai thử lại nhé.', 429);
   }
   const gloCount = parseInt((await kv.get(gloKey)) || '0', 10);
   if (gloCount >= GLOBAL_PER_DAY) {
