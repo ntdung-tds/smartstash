@@ -759,6 +759,7 @@ export default function QuickAddScreen() {
         title={t('qa.pickLocTitle')}
         onClose={() => setShowPicker(false)}
         allowCreate
+        createParentId={locationId}
         onSelect={selectLocation}
       />
       <BarcodeScannerModal

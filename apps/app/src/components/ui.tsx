@@ -221,13 +221,15 @@ export function StatusBadge({ status, lentInfo }: { status: string; lentInfo?: s
  * Dùng chung cho thẻ món (ItemCard) và đầu màn chi tiết đồ để nhất quán.
  */
 export function QtyBreakdown({
-  total, unit, lentOut = 0, consignedOut = 0, size = 13,
+  total, unit, lentOut = 0, consignedOut = 0, size = 13, suffix,
 }: {
   total: number;
   unit: string;
   lentOut?: number;
   consignedOut?: number;
   size?: number;
+  /** Chuỗi nối thêm cuối dòng SL (vd ngày thêm trên thẻ món ở màn chính) */
+  suffix?: string;
 }) {
   const lang = useAppStore((s) => s.lang);
   const out = lentOut + consignedOut;
@@ -238,6 +240,7 @@ export function QtyBreakdown({
     return (
       <Text style={{ fontSize: size, color: Colors.subtext, lineHeight: size + 6 }}>
         {translate(lang, 'qty.sl')} {num(total)} {unit}
+        {suffix ? <Text>{' · '}{suffix}</Text> : null}
       </Text>
     );
   }
@@ -258,17 +261,20 @@ export function QtyBreakdown({
       <Text>
         {' · '}{translate(lang, 'qty.atHome')} {num(available)}
       </Text>
+      {suffix ? <Text>{' · '}{suffix}</Text> : null}
     </Text>
   );
 }
 
 export function ItemCard({
-  item, breadcrumb, thumbUri, onPress, outInfo,
+  item, breadcrumb, thumbUri, onPress, outInfo, showAddedDate,
 }: {
   item: Item;
   breadcrumb: string;
   thumbUri?: string | null;
   onPress: () => void;
+  /** Chỉ màn chính bật: nối ngày thêm vào cuối dòng SL (không icon) */
+  showAddedDate?: boolean;
   /**
    * Cơ cấu đang ở ngoài của món, do màn cha tính từ loans ACTIVE đã tải sẵn
    * (không truyền thì thẻ chỉ hiện tổng số — vd màn chi tiết vị trí không
@@ -309,6 +315,7 @@ export function ItemCard({
           lentOut={outInfo?.lentOut ?? 0}
           consignedOut={outInfo?.consignedOut ?? 0}
           size={12.5}
+          suffix={showAddedDate ? `${translate(lang, 'detail.addedAt')}: ${formatDateForLang(item.created_at, lang)}` : undefined}
         />
         <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <StatusBadge
@@ -411,21 +418,26 @@ export function SceneImage({
  * được CHỌN ngay trong form này (ở tab Vị trí, cha đến từ nút "+" của đúng
  * hàng đó); mọi vị trí đều chọn được làm cha (không còn trần độ sâu từ
  * 27/10/2026 — sâu bao nhiêu cũng được, từ cấp 5 trở đi loại vẫn là
- * Vật chứa). Tạo xong trả vị trí mới qua onCreated để nơi gọi tự chọn
+ * Vật chứa). initialParentId (nếu có) đặt sẵn cha mặc định khi mở form.
+ * Tạo xong trả vị trí mới qua onCreated để nơi gọi tự chọn
  * ngay — không rời khỏi luồng đang làm dở.
  */
 export function CreateLocationModal({
-  visible, locations, onClose, onCreated,
+  visible, locations, onClose, onCreated, initialParentId,
 }: {
   visible: boolean;
   locations: Location[];
   onClose: () => void;
   onCreated: (loc: Location) => void;
+  /** Vị trí cha mặc định khi mở form (28/10/2026: mở từ bộ chọn của màn
+   *  thêm đồ thì cha mặc định = vị trí đang chọn ở màn đó — tạo vị trí
+   *  con không cần chọn lại cha; null = vị trí gốc như trước). */
+  initialParentId?: string | null;
 }) {
   const { t } = useT();
   const [name, setName] = useState('');
   const [icon, setIcon] = useState<IconName | null>(null);
-  const [parentId, setParentId] = useState<string | null>(null);
+  const [parentId, setParentId] = useState<string | null>(initialParentId ?? null);
   const [parentOpen, setParentOpen] = useState(false);
   const [info, setInfo] = useState<{ title: string; message?: string } | null>(null);
   const [creating, setCreating] = useState(false);
@@ -573,7 +585,7 @@ export function CreateLocationModal({
 }
 
 export function LocationPickerModal({
-  visible, locations, title, onClose, onSelect, excludeId, allowCreate,
+  visible, locations, title, onClose, onSelect, excludeId, allowCreate, createParentId,
 }: {
   visible: boolean;
   locations: Location[];
@@ -583,6 +595,8 @@ export function LocationPickerModal({
   excludeId?: string;
   /** Hiện mục "＋ Thêm vị trí mới" ở đầu danh sách: tạo xong TỰ CHỌN vị trí mới và đóng picker */
   allowCreate?: boolean;
+  /** Vị trí cha mặc định của form tạo mới (chuyền xuống CreateLocationModal) */
+  createParentId?: string | null;
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const byParent = new Map<string | null, Location[]>();
@@ -657,6 +671,7 @@ export function LocationPickerModal({
           key={showCreate ? 'create-open' : 'create-closed'}
           visible={showCreate}
           locations={locations}
+          initialParentId={createParentId}
           onClose={() => setShowCreate(false)}
           onCreated={(loc) => { setShowCreate(false); onSelect(loc); onClose(); }}
         />

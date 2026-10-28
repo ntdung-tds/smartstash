@@ -1011,6 +1011,14 @@ export default function ItemDetailScreen() {
             <Text style={{ color: conditionColor(item.condition), fontWeight: '700' }}>{conditionLabel(item.condition)}</Text>
           </Text>
         </View>
+        {/* Ngày thêm: cùng khối với tình trạng vật lý, có icon lịch riêng */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Ionicons name="calendar-outline" size={15} color={Colors.primary} />
+          <Text style={{ fontSize: 13, color: Colors.subtext }}>
+            <Text style={{ fontWeight: '400' }}>{t('detail.addedAt')}:</Text>{' '}
+            <Text style={{ color: Colors.text, fontWeight: '700' }}>{formatDateForLang(item.created_at, lang)}</Text>
+          </Text>
+        </View>
         {!!item.condition_note && (
           <View style={{ gap: 2 }}>
             <Text style={{ fontSize: 12.5, fontWeight: '700', color: Colors.text }}>{t('condition.noteLabel')}</Text>
@@ -1043,7 +1051,6 @@ export default function ItemDetailScreen() {
             </Text>
           );
         })()}
-        <Text style={{ fontSize: 13, color: Colors.subtext }}>{t('detail.createdAt')}: {formatDateForLang(item.created_at, lang)}</Text>
       </View>
 
       <View style={{ gap: 10 }}>
