@@ -9,7 +9,7 @@
 (function () {
   'use strict';
 
-  var DEFAULT_API_BASE = 'https://smartstash-admin.iaict-platform.workers.dev';
+  var DEFAULT_API_BASE = 'https://smartstash-admin.dungnt-stash.workers.dev';
   var ROLE_LABELS = { admin: 'Quản trị', staff: 'Nhân viên', viewer: 'Chỉ xem' };
   var PLAN_LABELS = { free: 'Miễn phí', pro_paid: 'Pro trả phí', pro_promo: 'Pro tặng', pro: 'Pro' };
   var ACTION_LABELS = {
