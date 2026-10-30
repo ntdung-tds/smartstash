@@ -1,0 +1,23 @@
+# SmartStash Admin — cấu hình deploy lên TÀI KHOẢN Cloudflare MỚI
+# (dungnt.stash@gmail.com). Tài khoản cũ (iaict-platform) vẫn dùng wrangler.toml.
+# Dùng kèm: export CLOUDFLARE_API_TOKEN=$(cat ~/.cf-api-token-new)
+#            export CLOUDFLARE_ACCOUNT_ID=<id tài khoản mới>
+#            wrangler deploy --config wrangler.new-account.toml
+# KHÔNG ghi bất kỳ bí mật nào vào file này.
+
+name = "smartstash-admin"
+main = "src/index.js"
+compatibility_date = "2026-10-24"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smartstash-admin"
+database_id = "9b3b6b78-3a8e-4bd7-8286-3e5a19a4e860"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "1900ee2adb714d2680ec38911c966f47"
+
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "smartstash-backups"
