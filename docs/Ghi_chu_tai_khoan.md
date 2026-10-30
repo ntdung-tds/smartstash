@@ -12,6 +12,7 @@ Token/key/mật khẩu nằm ở nơi riêng (xem cuối file).
 
 ## Cloudflare
 
+- Tên đăng nhập: **dungnt.apps@outlook.com**
 - Tài khoản (subdomain workers.dev): **iaict-platform**
 - Worker: **smartstash-admin** — https://smartstash-admin.iaict-platform.workers.dev
 - Pages quản trị: **smartstash-admin** — https://smartstash-admin.pages.dev
