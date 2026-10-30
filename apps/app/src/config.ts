@@ -64,7 +64,7 @@ export type PlanLimits = (typeof PLAN_LIMITS)[keyof typeof PLAN_LIMITS];
  * thì dùng giá trị đã cache trong app_kv, rồi mới tới mặc định trong code.
  * App KHÔNG BAO GIỜ phụ thuộc vào việc tải cấu hình thành công (offline-first).
  */
-export const ADMIN_WORKER_URL = 'https://smartstash-admin.iaict-platform.workers.dev';
+export const ADMIN_WORKER_URL = 'https://smartstash-admin.dungnt-stash.workers.dev';
 
 /**
  * Trang web công khai của SmartStash (Cloudflare Pages, chốt 27/10/2026):
